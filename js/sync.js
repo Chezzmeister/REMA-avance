@@ -114,37 +114,71 @@ const pathUrl = (rt, p) => `/drives/${rt.driveId}/items/${rt.itemId}:/${p.split(
 
 const limpiar = rec => { const o = { ...rec }; delete o._sync; delete o._remoteMod; return o; };
 
+// Bytes de una foto guardada. Las fotos nuevas se guardan como ArrayBuffer; las antiguas
+// como Blob, que en iPhone a veces ya no se puede volver a leer desde IndexedDB.
+export async function photoBytes(ph) {
+  if (ph?.data) return ph.data;
+  if (ph?.blob) return ph.blob.arrayBuffer();
+  return null;
+}
+export function photoBlob(ph) {
+  if (ph?.data) return new Blob([ph.data], { type: ph.type || 'image/jpeg' });
+  return ph?.blob || null;
+}
+
 async function push(rt) {
   const items = (await db.all('outbox')).sort((a, b) => a.ts - b.ts);
+  const errores = [];
   for (const it of items) {
-    if (it.kind === 'photo') {
-      const ph = await db.get('photos', it.refId);
-      if (ph?.blob) {
-        await graph(pathUrl(rt, `obras/${it.obraId}/fotos/${ph.id}.jpg`) + ':/content', { method: 'PUT', headers: { 'Content-Type': 'image/jpeg' }, body: ph.blob });
-        await db.put('photos', { ...ph, synced: true });
-      }
-    } else if (it.kind === 'record') {
-      const rec = await db.get('records', it.refId);
-      if (rec) {
-        const r = await graph(pathUrl(rt, `obras/${it.obraId}/capturas/${rec.id}.json`) + ':/content', {
-          method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(limpiar(rec)),
-        });
-        const meta = await r.json();
-        const cur = await db.get('records', rec.id);
-        // Si se editó mientras subía, se queda pendiente para la siguiente vuelta.
-        if (cur && (cur.modificado || 0) === (rec.modificado || 0)) await db.put('records', { ...cur, _sync: 'ok', _remoteMod: meta.lastModifiedDateTime });
-        else continue;
-      }
-    } else if (it.kind === 'config') {
-      const obra = await db.kvGet('obra:' + it.obraId);
-      if (obra) await graph(pathUrl(rt, `obras/${it.obraId}/obra.json`) + ':/content', {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(obra),
-      });
+    try {
+      if (!(await subir(rt, it))) continue;
+    } catch (e) {
+      if (e instanceof TypeError) throw e; // sin red: se reintenta todo después
+      errores.push(e.message);
+      continue; // un error no detiene a los demás
     }
     const still = await db.get('outbox', it.id);
     if (still && still.ts === it.ts) await db.del('outbox', it.id);
     await refreshPending();
   }
+  if (errores.length) throw new Error([...new Set(errores)].join(' · '));
+}
+
+// Sube un elemento de la cola. Devuelve false si debe quedarse en la cola.
+async function subir(rt, it) {
+  if (it.kind === 'photo') {
+    const ph = await db.get('photos', it.refId);
+    if (!ph || ph.synced) return true; // ya está en la nube
+    let bytes;
+    try { bytes = await photoBytes(ph); } catch { bytes = null; }
+    if (!bytes) {
+      await db.put('photos', { ...ph, danada: true });
+      await db.del('outbox', it.id);
+      await refreshPending();
+      throw new Error('Una foto no se pudo leer en este teléfono; vuelve a agregarla a la captura.');
+    }
+    await graph(pathUrl(rt, `obras/${it.obraId}/fotos/${ph.id}.jpg`) + ':/content', { method: 'PUT', headers: { 'Content-Type': 'image/jpeg' }, body: bytes });
+    const cur = await db.get('photos', ph.id);
+    await db.put('photos', { ...(cur || ph), synced: true });
+  } else if (it.kind === 'record') {
+    const rec = await db.get('records', it.refId);
+    if (rec) {
+      const r = await graph(pathUrl(rt, `obras/${it.obraId}/capturas/${rec.id}.json`) + ':/content', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(limpiar(rec)),
+      });
+      const meta = await r.json();
+      const cur = await db.get('records', rec.id);
+      // Si se editó mientras subía, se queda pendiente para la siguiente vuelta.
+      if (cur && (cur.modificado || 0) === (rec.modificado || 0)) await db.put('records', { ...cur, _sync: 'ok', _remoteMod: meta.lastModifiedDateTime });
+      else return false;
+    }
+  } else if (it.kind === 'config') {
+    const obra = await db.kvGet('obra:' + it.obraId);
+    if (obra) await graph(pathUrl(rt, `obras/${it.obraId}/obra.json`) + ':/content', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(obra),
+    });
+  }
+  return true;
 }
 
 async function pull(rt, obraId) {
@@ -184,15 +218,15 @@ async function pull(rt, obraId) {
 // Descarga bajo demanda de fotos tomadas en otros teléfonos.
 export async function getPhoto(obraId, id) {
   const ph = await db.get('photos', id);
-  if (ph?.blob) return ph.blob;
+  if (ph && !ph.danada && (ph.data || ph.blob)) return photoBlob(ph);
   if (!state.signedIn || !navigator.onLine) return null;
   try {
     const rt = await root();
     const r = await graph(pathUrl(rt, `obras/${obraId}/fotos/${id}.jpg`) + ':/content');
     if (!r) return null;
-    const blob = await r.blob();
-    await db.put('photos', { id, obraId, blob, synced: true });
-    return blob;
+    const data = await r.arrayBuffer();
+    await db.put('photos', { id, obraId, data, type: 'image/jpeg', synced: true });
+    return new Blob([data], { type: 'image/jpeg' });
   } catch { return null; }
 }
 

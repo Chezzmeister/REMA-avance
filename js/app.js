@@ -164,7 +164,7 @@ async function vCapturar(id) {
   const ultimoGrupo = g => { const rs = records.filter(r => !r.borrado && r.avanceGrupos?.[g] !== undefined && r.id !== rec.id).sort((a, b) => (a.fecha < b.fecha ? 1 : -1)); return rs[0]?.avanceGrupos[g]; };
   const R = C.tuberia(obra, records.filter(r => r.id !== rec.id), C.hoy());
   const urls = [];
-  const thumb = async f => { const ph = await db.get('photos', f.id); if (!ph?.blob) return ''; const u = URL.createObjectURL(ph.blob); urls.push(u); return u; };
+  const thumb = async f => { const b = await sync.getPhoto(obra.id, f.id); if (!b) return ''; const u = URL.createObjectURL(b); urls.push(u); return u; };
   const thumbs = await Promise.all(rec.fotos.map(thumb));
   const frentes = [...new Set(obra.tramos.map(t => t.frente))];
 
@@ -229,7 +229,9 @@ async function vCapturar(id) {
     for (const file of e.target.files) {
       const blob = await comprimir(file);
       const fid = uid();
-      await db.put('photos', { id: fid, obraId: obra.id, blob, synced: false });
+      // Se guardan los bytes (ArrayBuffer), no el Blob: en iPhone un Blob guardado
+      // a veces ya no se puede volver a leer.
+      await db.put('photos', { id: fid, obraId: obra.id, data: await blob.arrayBuffer(), type: 'image/jpeg', synced: false });
       rec.fotos.push({ id: fid, frente: frentes[0] || '', caption: '', fecha: rec.fecha });
     }
     if (esBorrador) await db.kvSet('draft:' + obra.id, rec); else await guardarRecord(rec);
