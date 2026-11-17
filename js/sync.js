@@ -19,8 +19,12 @@ export const state = { configured: false, signedIn: false, needsLogin: false, sy
 export const onChange = fn => { listeners.add(fn); return () => listeners.delete(fn); };
 function emit(patch) { Object.assign(state, patch); listeners.forEach(fn => fn(state)); }
 
+// Client ID del registro "REMA Avance" en Microsoft Entra. Es público (no es una contraseña).
+const CLIENT_ID = 'c83db146-c363-4306-9b3d-59a5f2d6c7df';
+
 export async function cloudCfg() {
-  return db.kvGet('cloud', { clientId: '', shareUrl: '' });
+  const c = await db.kvGet('cloud', {});
+  return { clientId: c.clientId || CLIENT_ID, shareUrl: c.shareUrl || '' };
 }
 
 async function refreshPending() { emit({ pending: (await db.all('outbox')).length }); }
