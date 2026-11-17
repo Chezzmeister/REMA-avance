@@ -430,7 +430,7 @@ async function start() {
 }
 
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('./sw.js').then(reg => {
+  navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' }).then(reg => {
     reg.addEventListener('updatefound', () => {
       const w = reg.installing;
       w?.addEventListener('statechange', () => { if (w.state === 'installed' && navigator.serviceWorker.controller) toast('Nueva versión lista: cierra y vuelve a abrir la app'); });

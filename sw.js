@@ -1,5 +1,5 @@
 // Service worker: deja la app completa guardada en el teléfono para abrirla sin señal.
-const VERSION = 'rema-v0.1.4';
+const VERSION = 'rema-v0.1.5';
 const SHELL = [
   './', './index.html', './styles.css', './manifest.webmanifest',
   './js/app.js', './js/db.js', './js/calc.js', './js/sync.js', './js/seed.js', './js/pptx.js',
@@ -48,7 +48,8 @@ self.addEventListener('fetch', e => {
 // Con señal buena se baja la versión más nueva; si la red falla o tarda más de 3 s
 // (señal débil en obra), se usa la copia guardada.
 function redPrimero(req, clave) {
-  const red = fetch(req).then(r => {
+  // no-cache: revalida con GitHub en vez de usar la copia de 10 min del navegador.
+  const red = fetch(req.url, { cache: 'no-cache', credentials: 'same-origin' }).then(r => {
     if (r.ok) { const cp = r.clone(); caches.open(VERSION).then(c => c.put(clave, cp)); }
     return r;
   });
