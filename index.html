@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>REMA Avance Semanal</title>
+  <meta name="theme-color" content="#1F3A5F">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="REMA Avance">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="stylesheet" href="styles.css">
+  <script>window.APP_VERSION = '0.1.1';</script>
+  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@2.38.3/lib/msal-browser.min.js" defer></script>
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <header class="top">
+    <span class="marca">REMA · Avance semanal</span>
+    <div id="estado" class="estado">Cargando…</div>
+  </header>
+  <main id="main"></main>
+  <nav>
+    <a href="#/tablero">Tablero</a>
+    <a href="#/capturar">Capturar</a>
+    <a href="#/historial">Capturas</a>
+    <a href="#/fotos">Fotos</a>
+    <a href="#/obra">Obra</a>
+    <a href="#/ajustes">Ajustes</a>
+  </nav>
+  <div id="toast" class="toast"></div>
+</body>
+</html>

@@ -1,0 +1,15 @@
+{
+  "name": "REMA Avance Semanal",
+  "short_name": "REMA Avance",
+  "description": "Captura de avance de obra y reporte semanal, funciona sin señal.",
+  "lang": "es-MX",
+  "start_url": "./#/tablero",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#1F3A5F",
+  "theme_color": "#1F3A5F",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

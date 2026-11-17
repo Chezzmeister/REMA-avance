@@ -1,0 +1,49 @@
+// Service worker: deja la app completa guardada en el teléfono para abrirla sin señal.
+const VERSION = 'rema-v0.1.1';
+const SHELL = [
+  './', './index.html', './styles.css', './manifest.webmanifest',
+  './js/app.js', './js/db.js', './js/calc.js', './js/sync.js', './js/seed.js', './js/pptx.js',
+  './icons/icon-192.png', './icons/icon-512.png',
+];
+const LIBS = [
+  'https://cdn.jsdelivr.net/npm/@azure/msal-browser@2.38.3/lib/msal-browser.min.js',
+  'https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js',
+];
+
+self.addEventListener('install', e => {
+  e.waitUntil((async () => {
+    const c = await caches.open(VERSION);
+    await c.addAll(SHELL);
+    await Promise.all(LIBS.map(u => c.add(new Request(u, { mode: 'cors' })).catch(() => {})));
+    self.skipWaiting();
+  })());
+});
+
+self.addEventListener('activate', e => {
+  e.waitUntil((async () => {
+    for (const k of await caches.keys()) if (k !== VERSION) await caches.delete(k);
+    await self.clients.claim();
+  })());
+});
+
+self.addEventListener('fetch', e => {
+  const req = e.request;
+  if (req.method !== 'GET') return;
+  const url = new URL(req.url);
+  // Nunca cachear llamadas a Microsoft (datos y sesión).
+  if (/graph\.microsoft\.com|login\.microsoftonline\.com|login\.live\.com|1drv|sharepoint/.test(url.host)) return;
+
+  if (req.mode === 'navigate') {
+    e.respondWith(fetch(req).then(r => { const cp = r.clone(); caches.open(VERSION).then(c => c.put('./index.html', cp)); return r; })
+      .catch(() => caches.match('./index.html')));
+    return;
+  }
+  const esLib = LIBS.includes(req.url);
+  if (url.origin === location.origin || esLib) {
+    // Caché primero y actualiza en segundo plano.
+    e.respondWith(caches.match(req, { ignoreSearch: url.origin === location.origin }).then(hit => {
+      const net = fetch(req).then(r => { if (r.ok) { const cp = r.clone(); caches.open(VERSION).then(c => c.put(req, cp)); } return r; }).catch(() => hit);
+      return hit || net;
+    }));
+  }
+});
