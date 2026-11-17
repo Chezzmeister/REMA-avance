@@ -1,31 +1,40 @@
 import * as db from './db.js';
 import * as sync from './sync.js';
 import * as C from './calc.js';
-import { OBRA_INICIAL } from './seed.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
 const num = v => (v === '' || v === null || v === undefined ? undefined : +String(v).replace(/[$,\s]/g, ''));
 
-let obra, records = [], settings, corte = C.hoy();
+let obra = null, records = [], settings = { obraId: null }, corte = C.hoy();
 const main = () => $('#main');
+const ses = () => sync.state.sesion;
+const rol = () => sync.rol();
+const gestor = () => sync.gestiona();
+const ROL_NOMBRE = { admin: 'Administrador', gerente: 'Gerente', supervisor: 'Supervisor' };
+
+// Menú por rol. "Cuenta" vive en el encabezado (nombre del usuario).
+const MENUS = {
+  supervisor: [['capturar', 'Capturar'], ['historial', 'Mis capturas'], ['fotos', 'Fotos'], ['obra', 'Obra']],
+  gerente: [['tablero', 'Tablero'], ['capturar', 'Capturar'], ['historial', 'Capturas'], ['fotos', 'Fotos'], ['obra', 'Obra']],
+  admin: [['tablero', 'Tablero'], ['capturar', 'Capturar'], ['historial', 'Capturas'], ['fotos', 'Fotos'], ['obra', 'Obra'], ['admin', 'Admin']],
+};
+const inicio = () => (gestor() ? 'tablero' : 'capturar');
 
 // ---------- Datos ----------
 async function cargar() {
-  settings = await db.kvGet('settings', { obraId: OBRA_INICIAL.id, autor: '' });
-  obra = await db.kvGet('obra:' + settings.obraId);
-  if (!obra) { obra = { ...OBRA_INICIAL, updatedAt: 0 }; await db.kvSet('obra:' + obra.id, obra); }
-  records = (await db.all('records')).filter(r => r.obraId === obra.id);
+  settings = await db.kvGet('settings', { obraId: null });
+  const obras = ses()?.obras || [];
+  if (!obras.some(o => o.id === settings.obraId)) {
+    settings.obraId = obras.length === 1 ? obras[0].id : null;
+    await db.kvSet('settings', settings);
+  }
+  obra = settings.obraId ? await db.kvGet('obra:' + settings.obraId, null) : null;
+  records = obra ? (await db.all('records')).filter(r => r.obraId === obra.id) : [];
 }
 
-async function guardarObra(o) {
-  o.updatedAt = Date.now();
-  obra = o;
-  await db.kvSet('obra:' + o.id, o);
-  await db.enqueue('config', o.id, o.id);
-  pedirSync();
-}
+const editable = rec => gestor() || !rec._subido;
 
 async function guardarRecord(rec) {
   rec.modificado = Date.now();
@@ -42,40 +51,161 @@ async function guardarRecord(rec) {
 }
 
 let syncTimer;
-function pedirSync() { clearTimeout(syncTimer); syncTimer = setTimeout(async () => { const n = await sync.syncNow(obra.id); if (n) { await cargar(); render(); } }, 500); }
+function pedirSync() {
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(async () => {
+    const antes = JSON.stringify(ses()?.obras || []);
+    const faltabaObra = !obra;
+    const n = await sync.syncNow(settings.obraId);
+    const ruta = rutaActual()[0];
+    const cambio = n || antes !== JSON.stringify(ses()?.obras || []);
+    // No se repinta una pantalla con un formulario a medio llenar (salvo que estuviera esperando la obra).
+    if (faltabaObra || (cambio && !['capturar', 'admin', 'cuenta'].includes(ruta))) {
+      await cargar();
+      if (faltabaObra ? !!obra : true) render();
+    }
+  }, 400);
+}
 
-// ---------- Barra de estado ----------
+// ---------- Encabezado y estado ----------
 function pintarEstado(s = sync.state) {
   const el = $('#estado');
-  const online = navigator.onLine;
+  if (!s.sesion) { el.className = 'estado'; el.textContent = ''; return; }
   let txt, cls;
-  if (!online) { txt = `Sin señal · ${s.pending ? s.pending + ' por subir' : 'todo guardado en el teléfono'}`; cls = 'off'; }
-  else if (!s.configured) { txt = `Modo local · ${s.pending} por subir (configura la nube en Ajustes)`; cls = 'warn'; }
-  else if (!s.signedIn || s.needsLogin) { txt = `Inicia sesión para subir · ${s.pending} pendientes`; cls = 'warn'; }
+  if (s.needsLogin) { txt = `Sesión vencida · toca para entrar${s.pending ? ` (${s.pending} por subir)` : ''}`; cls = 'warn'; }
+  else if (!navigator.onLine) { txt = `Sin señal · ${s.pending ? s.pending + ' por subir' : 'todo guardado en el teléfono'}`; cls = 'off'; }
   else if (s.syncing) { txt = 'Sincronizando…'; cls = 'busy'; }
-  else if (s.error) { txt = `Error al subir: ${s.error}`; cls = 'err'; }
+  else if (s.error) { txt = s.error; cls = 'err'; }
   else if (s.pending) { txt = `${s.pending} por subir`; cls = 'busy'; }
   else { txt = s.lastSync ? `Sincronizado · ${new Date(s.lastSync).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}` : 'Listo'; cls = 'ok'; }
   el.className = 'estado ' + cls;
   el.textContent = txt;
+  el.onclick = s.needsLogin ? () => { location.hash = '#/cuenta'; } : null;
 }
 
-// ---------- Vistas ----------
-const RUTAS = { tablero: vTablero, capturar: vCapturar, historial: vHistorial, fotos: vFotos, obra: vObra, ajustes: vAjustes };
+function pintarEncabezado() {
+  const s = ses();
+  $('#quien').textContent = s ? s.usuario.nombre : '';
+  $('#quien').hidden = !s;
+  const o = s?.obras.find(x => x.id === settings.obraId);
+  $('#obraActual').textContent = o ? o.nombre : '';
+  const nav = $('nav');
+  nav.hidden = !s;
+  if (s) nav.innerHTML = MENUS[rol()].map(([r, t]) => `<a href="#/${r}">${t}</a>`).join('');
+}
 
-function render() {
-  const [ruta, arg] = (location.hash.replace(/^#\/?/, '') || 'tablero').split('/');
-  const fn = RUTAS[ruta] || vTablero;
-  document.querySelectorAll('nav a').forEach(a => a.classList.toggle('activo', a.getAttribute('href') === '#/' + (RUTAS[ruta] ? ruta : 'tablero')));
-  fn(arg);
+// ---------- Rutas ----------
+function rutaActual() {
+  const [camino, query] = location.hash.replace(/^#\/?/, '').split('?');
+  const partes = camino.split('/').filter(Boolean);
+  return [partes[0] || '', partes[1], partes[2], new URLSearchParams(query || '')];
+}
+
+const VISTAS = { tablero: vTablero, capturar: vCapturar, historial: vHistorial, fotos: vFotos, obra: vObra, cuenta: vCuenta, admin: vAdmin, ver: vDetalle };
+
+async function render() {
+  pintarEncabezado();
   pintarEstado();
+  if (!ses()) return vLogin();
+  let [ruta, a1, a2, q] = rutaActual();
+  const permitidas = [...MENUS[rol()].map(m => m[0]), 'cuenta', 'ver'];
+  if (!permitidas.includes(ruta)) { location.replace('#/' + inicio()); return; }
+  document.querySelectorAll('nav a').forEach(a => a.classList.toggle('activo', a.getAttribute('href') === '#/' + (ruta === 'ver' ? 'historial' : ruta)));
+  const sinObra = !['obra', 'cuenta', 'admin'].includes(ruta);
+  if (sinObra && !settings.obraId) return vObra();
+  if (sinObra && !obra) {
+    main().innerHTML = `<h1>Descargando la obra…</h1><p class="peq">${navigator.onLine ? 'Un momento.' : 'Necesitas señal la primera vez que abres una obra en este teléfono.'}</p>`;
+    pedirSync();
+    return;
+  }
+  return VISTAS[ruta](a1, a2, q);
 }
 
+// ---------- Login ----------
+function vLogin(expirada = false) {
+  main().innerHTML = `
+  <div class="login">
+    <h1>${expirada ? 'Vuelve a iniciar sesión' : 'Iniciar sesión'}</h1>
+    ${expirada ? '<p class="peq">Lo que capturaste sigue guardado en este teléfono y se subirá al entrar.</p>' : ''}
+    <form id="fl" class="form">
+      <label>Usuario<input name="usuario" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" required value="${esc(expirada ? ses()?.usuario.usuario : '')}"></label>
+      <label>Contraseña<input type="password" name="password" autocomplete="current-password" required></label>
+      <p id="errLogin" class="neg"></p>
+      <button class="btn grande">Entrar</button>
+    </form>
+    <p class="peq">Necesitas señal para entrar. Después la app funciona sin señal.</p>
+  </div>`;
+  // Primera vez: si el servidor no tiene usuarios, se ofrece crear el administrador.
+  if (!expirada && navigator.onLine) sync.api('/setup').then(r => { if (r.necesario) vCrearAdmin(); }).catch(() => {});
+  $('#fl').onsubmit = async e => {
+    e.preventDefault();
+    const fd = new FormData(e.target), btn = e.target.querySelector('button');
+    if (!navigator.onLine) { $('#errLogin').textContent = 'No hay señal. Intenta cuando tengas conexión.'; return; }
+    btn.disabled = true; btn.textContent = 'Entrando…';
+    try {
+      await sync.login(fd.get('usuario').trim(), fd.get('password'));
+      await cargar();
+      location.hash = '#/' + inicio();
+      render();
+      pedirSync();
+    } catch (err) {
+      $('#errLogin').textContent = err instanceof TypeError ? 'No se pudo conectar. Revisa tu señal.' : err.message;
+      btn.disabled = false; btn.textContent = 'Entrar';
+    }
+  };
+}
+
+function vCrearAdmin() {
+  main().innerHTML = `
+  <div class="login">
+    <h1>Crear administrador</h1>
+    <p class="peq">Es la primera vez que se usa el sistema. Crea tu cuenta de administrador; con ella darás de alta a los demás.</p>
+    <form id="fa" class="form">
+      <label>Nombre completo<input name="nombre" required></label>
+      <label>Usuario<input name="usuario" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" required pattern="[a-zA-Z0-9._\\-]{3,40}"></label>
+      <label>Contraseña <span class="peq">mínimo 8 caracteres</span><input type="password" name="password" autocomplete="new-password" minlength="8" required></label>
+      <label>Repite la contraseña<input type="password" name="password2" autocomplete="new-password" minlength="8" required></label>
+      <p id="errA" class="neg"></p>
+      <button class="btn grande">Crear y entrar</button>
+    </form>
+  </div>`;
+  $('#fa').onsubmit = async e => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    if (fd.get('password') !== fd.get('password2')) { $('#errA').textContent = 'Las contraseñas no coinciden.'; return; }
+    try {
+      await sync.api('/setup', { method: 'POST', json: { nombre: fd.get('nombre').trim(), usuario: fd.get('usuario').trim(), password: fd.get('password') } });
+      await sync.login(fd.get('usuario').trim(), fd.get('password'));
+      await cargar();
+      location.hash = '#/admin/onedrive';
+      render();
+    } catch (err) { $('#errA').textContent = err.message; }
+  };
+}
+
+// ---------- Obra (selector) ----------
+function vObra() {
+  const obras = ses().obras;
+  main().innerHTML = `<h1>Obra</h1>
+  ${obras.length ? `<p class="peq">Elige la obra en la que vas a trabajar.</p>
+  <div class="lista-obras">${obras.map(o => `<button class="obra-op ${o.id === settings.obraId ? 'sel' : ''}" data-id="${esc(o.id)}">${esc(o.nombre)}${o.id === settings.obraId ? '<span class="chip ok">Actual</span>' : ''}</button>`).join('')}</div>`
+    : '<p>No tienes obras asignadas. Pide al administrador que te asigne una.</p>'}
+  ${obra && gestor() ? `<div class="tarjeta"><h3>${esc(obra.nombre)}</h3><p class="peq">${esc(obra.localidad)}<br>${esc(obra.cliente || '')}${obra.concurso ? ' · Concurso ' + esc(obra.concurso) : ''}<br>Del ${C.fechaCorta(obra.inicio)} al ${C.fechaCorta(obra.fin)}</p>${rol() === 'admin' ? `<a class="btn sec" href="#/admin/obra/${esc(obra.id)}">Editar datos de la obra</a>` : ''}</div>` : ''}`;
+  main().querySelectorAll('.obra-op').forEach(b => b.onclick = async () => {
+    settings.obraId = b.dataset.id;
+    await db.kvSet('settings', settings);
+    await cargar();
+    location.hash = '#/' + inicio();
+    render();
+    pedirSync();
+  });
+}
+
+// ---------- Tablero (gerente y administrador) ----------
 function barra(pct, color = 'var(--verde)') {
   const p = Math.max(0, Math.min(1, pct || 0)) * 100;
   return `<div class="barra"><span style="width:${p}%;background:${color}"></span></div>`;
 }
-
 function kpi(t, v, a, b, pct) {
   return `<div class="kpi"><div class="kpi-t">${t}</div><div class="kpi-v">${v}</div>${pct !== undefined ? barra(pct) : ''}<div class="kpi-a">${a || ''}</div><div class="kpi-b">${b || ''}</div></div>`;
 }
@@ -100,7 +230,7 @@ function vTablero() {
     ${kpi('Personal en obra', R.personal ? esc(R.personal.valor) : '—', R.personal ? 'Al ' + C.fechaCorta(R.personal.fecha) : 'Sin captura')}
     ${kpi('Atrasos', R.atrasos ? esc(R.atrasos.valor) + ' días' : '—', R.atrasos ? 'Al ' + C.fechaCorta(R.atrasos.fecha) : 'Sin captura')}
   </div>
-  ${R.programa.metodo === 'mensual' ? '<p class="nota">Programa estimado con los montos mensuales. Importa las 36 partidas del AE10 en <a href="#/obra">Obra</a> para el cálculo exacto por concepto.</p>' : ''}
+  ${R.programa.metodo === 'mensual' ? `<p class="nota">Programa estimado con los montos mensuales.${rol() === 'admin' ? ` Carga las partidas del AE10 en <a href="#/admin/obra/${esc(obra.id)}">los datos de la obra</a> para el cálculo exacto por concepto.` : ''}</p>` : ''}
 
   <h2>Tubería</h2>
   <div class="tarjeta">
@@ -109,7 +239,7 @@ function vTablero() {
       <div class="fila"><b>${esc(tr.frente)} · ${esc(tr.diametro)}</b><span class="pct">${C.fmtPct(tr.pct)}</span></div>
       ${barra(tr.pct)}
       <div class="peq">${C.fmtM(tr.instalado)} de ${C.fmtM(tr.longitud)} · por instalar ${C.fmtM(tr.restante)} ${tr.excede ? '<b class="neg">· excede la longitud total</b>' : ''}</div>
-    </div>`).join('')}
+    </div>`).join('') || '<p class="peq">Sin tramos.</p>'}
   ${R.tuberia.frentes.map(f => `<div class="fila total"><b>Total ${esc(f.frente)}</b><span>${C.fmtM(f.instalado)} de ${C.fmtM(f.longitud)} · ${C.fmtPct(f.pct)}</span></div>`).join('')}
   </div>
 
@@ -142,7 +272,7 @@ function vTablero() {
   };
 }
 
-// --- Captura ---
+// ---------- Captura ----------
 async function comprimir(file, max = 1600, q = 0.72) {
   const img = await createImageBitmap(file).catch(() => null);
   if (!img) return file;
@@ -153,43 +283,56 @@ async function comprimir(file, max = 1600, q = 0.72) {
   return new Promise(r => cv.toBlob(b => r(b || file), 'image/jpeg', q));
 }
 
+async function miniaturas(fotos, urls) {
+  return Promise.all(fotos.map(async f => {
+    const b = await sync.getPhoto(obra.id, f.id);
+    if (!b) return '';
+    const u = URL.createObjectURL(b); urls.push(u); return u;
+  }));
+}
+
 async function vCapturar(id) {
   let rec;
-  if (id) rec = await db.get('records', id);
-  if (!rec) {
+  if (id) {
+    rec = await db.get('records', id);
+    if (!rec || rec.borrado) { location.replace('#/historial'); return; }
+    if (!editable(rec)) { location.replace('#/ver/' + id); return; }
+  } else {
     rec = await db.kvGet('draft:' + obra.id);
-    if (!rec || id) rec = { id: uid(), obraId: obra.id, fecha: C.hoy(), autor: settings.autor, tuberia: {}, avanceGrupos: {}, fotos: [], creado: Date.now() };
+    if (!rec) rec = { id: uid(), obraId: obra.id, fecha: C.hoy(), tuberia: {}, avanceGrupos: {}, fotos: [], creado: Date.now() };
   }
-  const esBorrador = !(await db.get('records', rec.id));
-  const ultimoGrupo = g => { const rs = records.filter(r => !r.borrado && r.avanceGrupos?.[g] !== undefined && r.id !== rec.id).sort((a, b) => (a.fecha < b.fecha ? 1 : -1)); return rs[0]?.avanceGrupos[g]; };
-  const R = C.tuberia(obra, records.filter(r => r.id !== rec.id), C.hoy());
+  const esBorrador = !id;
+  const autor = rec.autor || ses().usuario.nombre;
+  const otros = records.filter(r => r.id !== rec.id && !r.borrado);
+  const ultimoGrupo = g => { const rs = otros.filter(r => r.avanceGrupos?.[g] !== undefined).sort((a, b) => (a.fecha < b.fecha ? 1 : -1)); return rs[0]?.avanceGrupos[g]; };
+  const T = C.tuberia(obra, otros, C.hoy());
   const urls = [];
-  const thumb = async f => { const b = await sync.getPhoto(obra.id, f.id); if (!b) return ''; const u = URL.createObjectURL(b); urls.push(u); return u; };
-  const thumbs = await Promise.all(rec.fotos.map(thumb));
+  const thumbs = await miniaturas(rec.fotos, urls);
   const frentes = [...new Set(obra.tramos.map(t => t.frente))];
+  const puedeQuitarFoto = f => gestor() || !rec._subido;
 
   main().innerHTML = `
   <h1>${esBorrador ? 'Nueva captura' : 'Editar captura'}</h1>
   <form id="f" class="form">
     <div class="dos">
       <label>Fecha<input type="date" name="fecha" value="${esc(rec.fecha)}" required></label>
-      <label>Capturista<input name="autor" value="${esc(rec.autor || settings.autor)}" placeholder="Tu nombre" required></label>
+      <div class="dato"><span>Capturista</span><b>${esc(autor)}</b></div>
     </div>
-    <fieldset><legend>Tubería instalada en este periodo (metros nuevos)</legend>
-      ${obra.tramos.map(t => { const r = R.tramos.find(x => x.id === t.id); return `
-        <label>${esc(t.frente)} · ${esc(t.diametro)} <span class="peq">(llevan ${C.fmtM(r.instalado)} de ${C.fmtM(t.longitud)})</span>
-        <input name="tub_${t.id}" inputmode="decimal" placeholder="0.00" value="${rec.tuberia?.[t.id] ?? ''}"></label>`; }).join('')}
-    </fieldset>
+    ${obra.tramos.length ? `<fieldset><legend>Tubería instalada en este periodo (metros nuevos)</legend>
+      ${obra.tramos.map(t => { const r = T.tramos.find(x => x.id === t.id); return `
+        <label>${esc(t.frente)} · ${esc(t.diametro)} ${gestor() ? `<span class="peq">(llevan ${C.fmtM(r.instalado)} de ${C.fmtM(t.longitud)})</span>` : ''}
+        <input name="tub_${esc(t.id)}" inputmode="decimal" placeholder="0.00" value="${rec.tuberia?.[t.id] ?? ''}"></label>`; }).join('')}
+    </fieldset>` : ''}
     <fieldset><legend>Obra</legend>
       <div class="dos">
         <label>Personal en obra<input name="personal" inputmode="numeric" value="${rec.personal ?? ''}"></label>
         <label>Días de atraso<input name="atrasosDias" inputmode="numeric" value="${rec.atrasosDias ?? ''}"></label>
       </div>
-      <label>Importe ejecutado acumulado ($) <span class="peq">opcional, para avance financiero</span><input name="importeEjecutado" inputmode="decimal" value="${rec.importeEjecutado ?? ''}"></label>
+      ${gestor() ? `<label>Importe ejecutado acumulado ($) <span class="peq">opcional, para avance financiero</span><input name="importeEjecutado" inputmode="decimal" value="${rec.importeEjecutado ?? ''}"></label>` : ''}
     </fieldset>
-    <fieldset><legend>Avance real acumulado por grupo (%)</legend>
-      ${obra.grupos.map(g => { const u = ultimoGrupo(g.id); return `<label>${esc(g.nombre)}<input name="grp_${g.id}" inputmode="decimal" placeholder="${u !== undefined ? 'último: ' + u + '%' : '0–100'}" value="${rec.avanceGrupos?.[g.id] ?? ''}"></label>`; }).join('')}
-    </fieldset>
+    ${obra.grupos.length ? `<fieldset><legend>Avance real acumulado por grupo (%)</legend>
+      ${obra.grupos.map(g => { const u = ultimoGrupo(g.id); return `<label>${esc(g.nombre)}<input name="grp_${esc(g.id)}" inputmode="decimal" placeholder="${u !== undefined ? 'último: ' + u + '%' : '0–100'}" value="${rec.avanceGrupos?.[g.id] ?? ''}"></label>`; }).join('')}
+    </fieldset>` : ''}
     <fieldset><legend>Observaciones</legend>
       <label>Actividades de la próxima semana<textarea name="actividades" rows="3">${esc(rec.actividades)}</textarea></label>
       <label>Atrasos y problemática<textarea name="problematica" rows="3">${esc(rec.problematica)}</textarea></label>
@@ -197,32 +340,35 @@ async function vCapturar(id) {
     </fieldset>
     <fieldset><legend>Fotografías</legend>
       <div class="fotos-ed">
-        ${rec.fotos.map((f, i) => `<div class="foto-ed" data-i="${i}">
+        ${rec.fotos.map((f, i) => `<div class="foto-ed">
           ${thumbs[i] ? `<img src="${thumbs[i]}" alt="">` : '<div class="sinfoto">Sin descargar</div>'}
           <select name="ff_${i}">${frentes.map(fr => `<option ${f.frente === fr ? 'selected' : ''}>${esc(fr)}</option>`).join('')}<option ${!frentes.includes(f.frente) ? 'selected' : ''} value="">Otro</option></select>
           <input name="fc_${i}" placeholder="Actividad" value="${esc(f.caption)}">
-          <button type="button" class="quitar" data-i="${i}">Quitar</button></div>`).join('')}
+          ${puedeQuitarFoto(f) ? `<button type="button" class="quitar" data-i="${i}">Quitar</button>` : ''}</div>`).join('')}
       </div>
       <label class="btn sec">Tomar / agregar fotos<input type="file" id="files" accept="image/*" multiple hidden></label>
     </fieldset>
     <button class="btn grande" type="submit">Guardar</button>
-    ${esBorrador ? '<button type="button" class="btn sec" id="descartar">Descartar borrador</button>' : '<button type="button" class="btn peligro" id="borrar">Eliminar captura</button>'}
-    <p class="peq">Se guarda en este teléfono aunque no haya señal y se sube solo cuando regrese.</p>
+    ${esBorrador ? '<button type="button" class="btn sec" id="descartar">Descartar borrador</button>'
+      : gestor() ? '<button type="button" class="btn peligro" id="borrar">Eliminar captura</button>'
+      : '<button type="button" class="btn peligro" id="descartarLocal">Descartar captura (aún no se sube)</button>'}
+    <p class="peq">${gestor() ? 'Se guarda en este teléfono aunque no haya señal y se sube solo cuando regrese.'
+      : 'Se guarda en este teléfono aunque no haya señal. Puedes corregirla hasta que se suba; después ya no se puede modificar.'}</p>
   </form>`;
 
   const form = $('#f');
   const leer = () => {
     const fd = new FormData(form);
-    const o = { ...rec, fecha: fd.get('fecha'), autor: fd.get('autor').trim(), tuberia: {}, avanceGrupos: {} };
+    const o = { ...rec, fecha: fd.get('fecha'), autor, tuberia: {}, avanceGrupos: {} };
     for (const t of obra.tramos) { const v = num(fd.get('tub_' + t.id)); if (v !== undefined && !isNaN(v)) o.tuberia[t.id] = v; }
     for (const g of obra.grupos) { const v = num(fd.get('grp_' + g.id)); if (v !== undefined && !isNaN(v)) o.avanceGrupos[g.id] = Math.max(0, Math.min(100, v)); }
-    for (const k of ['personal', 'atrasosDias', 'importeEjecutado']) { const v = num(fd.get(k)); if (v !== undefined && !isNaN(v)) o[k] = v; else delete o[k]; }
+    for (const k of ['personal', 'atrasosDias', 'importeEjecutado']) { const v = num(fd.get(k)); if (v !== undefined && !isNaN(v)) o[k] = v; else if (k !== 'importeEjecutado' || gestor()) delete o[k]; }
     for (const k of ['actividades', 'problematica', 'requerimientos']) o[k] = fd.get(k) || '';
     o.fotos = rec.fotos.map((f, i) => ({ ...f, frente: fd.get('ff_' + i) ?? f.frente, caption: fd.get('fc_' + i) ?? f.caption }));
     return o;
   };
-  const guardarBorrador = () => { if (esBorrador) { rec = leer(); db.kvSet('draft:' + obra.id, rec); } };
-  form.oninput = guardarBorrador;
+  const volver = () => { urls.forEach(URL.revokeObjectURL); vCapturar(esBorrador ? undefined : rec.id); };
+  form.oninput = () => { if (esBorrador) { rec = leer(); db.kvSet('draft:' + obra.id, rec); } };
 
   $('#files').onchange = async e => {
     rec = leer();
@@ -235,31 +381,39 @@ async function vCapturar(id) {
       rec.fotos.push({ id: fid, frente: frentes[0] || '', caption: '', fecha: rec.fecha });
     }
     if (esBorrador) await db.kvSet('draft:' + obra.id, rec); else await guardarRecord(rec);
-    urls.forEach(URL.revokeObjectURL);
-    vCapturar(esBorrador ? undefined : rec.id);
+    volver();
   };
   form.querySelectorAll('.quitar').forEach(b => b.onclick = async () => {
     rec = leer();
     const [f] = rec.fotos.splice(+b.dataset.i, 1);
     const ph = await db.get('photos', f.id);
     if (ph && !ph.synced) { await db.del('photos', f.id); await db.del('outbox', 'photo:' + f.id); }
+    else if (gestor()) await db.enqueue('fotodel', f.id, obra.id);
     if (esBorrador) await db.kvSet('draft:' + obra.id, rec); else await guardarRecord(rec);
-    vCapturar(esBorrador ? undefined : rec.id);
+    volver();
   });
   form.onsubmit = async e => {
     e.preventDefault();
-    const o = leer();
-    if (o.autor && o.autor !== settings.autor) { settings.autor = o.autor; await db.kvSet('settings', settings); }
-    await guardarRecord(o);
-    await db.del('kv', 'draft:' + obra.id);
+    await guardarRecord(leer());
+    if (esBorrador) await db.del('kv', 'draft:' + obra.id);
     toast('Captura guardada');
     location.hash = '#/historial';
   };
   $('#descartar')?.addEventListener('click', async () => {
     if (!confirm('¿Descartar este borrador?')) return;
-    for (const f of rec.fotos) { await db.del('photos', f.id); }
+    for (const f of rec.fotos) await db.del('photos', f.id);
     await db.del('kv', 'draft:' + obra.id);
     vCapturar();
+  });
+  $('#descartarLocal')?.addEventListener('click', async () => {
+    const actual = await db.get('records', rec.id);
+    if (actual?._subido) { toast('Ya se subió; no se puede descartar'); location.hash = '#/ver/' + rec.id; return; }
+    if (!confirm('¿Descartar esta captura? Todavía no se ha subido.')) return;
+    for (const f of rec.fotos) { await db.del('photos', f.id); await db.del('outbox', 'photo:' + f.id); }
+    await db.del('outbox', 'record:' + rec.id);
+    await db.del('records', rec.id);
+    await sync.markChanged(); await cargar();
+    location.hash = '#/historial';
   });
   $('#borrar')?.addEventListener('click', async () => {
     if (!confirm('¿Eliminar esta captura? Se quitará también para los demás.')) return;
@@ -268,13 +422,33 @@ async function vCapturar(id) {
   });
 }
 
+// Vista de solo lectura (capturas ya subidas, para el supervisor).
+async function vDetalle(id) {
+  const rec = await db.get('records', id);
+  if (!rec || rec.borrado) { location.replace('#/historial'); return; }
+  if (editable(rec)) { location.replace('#/capturar/' + id); return; }
+  const urls = [];
+  const thumbs = await miniaturas(rec.fotos || [], urls);
+  const fila = (k, v) => (v === undefined || v === '' ? '' : `<tr><td>${k}</td><td class="r">${esc(v)}</td></tr>`);
+  main().innerHTML = `<h1>Captura del ${C.fechaCorta(rec.fecha)}</h1>
+  <p class="peq">${esc(rec.autor || '')} · Ya se subió; no se puede modificar.</p>
+  <div class="tarjeta"><table><tbody>
+    ${obra.tramos.map(t => fila(`Tubería ${esc(t.frente)} · ${esc(t.diametro)}`, rec.tuberia?.[t.id] !== undefined ? C.fmtM(rec.tuberia[t.id]) : '')).join('')}
+    ${fila('Personal en obra', rec.personal)}${fila('Días de atraso', rec.atrasosDias)}
+    ${obra.grupos.map(g => fila(esc(g.nombre), rec.avanceGrupos?.[g.id] !== undefined ? rec.avanceGrupos[g.id] + '%' : '')).join('')}
+  </tbody></table></div>
+  ${[['Actividades de la próxima semana', rec.actividades], ['Atrasos y problemática', rec.problematica], ['Requerimientos y acuerdos', rec.requerimientos]].filter(x => x[1]?.trim()).map(([t, v]) => `<div class="tarjeta"><h3>${t}</h3><p>${esc(v)}</p></div>`).join('')}
+  ${(rec.fotos || []).length ? `<div class="galeria">${rec.fotos.map((f, i) => `<figure><div class="ph">${thumbs[i] ? `<img src="${thumbs[i]}" alt="">` : 'Se descarga con señal'}</div><figcaption>${esc(f.frente)} ${f.caption ? '· ' + esc(f.caption) : ''}</figcaption></figure>`).join('')}</div>` : ''}
+  <a class="btn sec" href="#/historial">Volver</a>`;
+}
+
 function vHistorial() {
   const rs = records.filter(r => !r.borrado).sort((a, b) => (a.fecha === b.fecha ? (b.creado || 0) - (a.creado || 0) : a.fecha < b.fecha ? 1 : -1));
-  main().innerHTML = `<h1>Capturas</h1>
+  main().innerHTML = `<h1>${gestor() ? 'Capturas' : 'Mis capturas'}</h1>
   ${rs.length ? rs.map(r => {
     const m = Object.values(r.tuberia || {}).reduce((s, v) => s + (+v || 0), 0);
-    return `<a class="tarjeta item" href="#/capturar/${r.id}">
-      <div class="fila"><b>${C.fechaCorta(r.fecha)} · ${esc(r.autor || 'Sin nombre')}</b><span class="chip ${r._sync === 'ok' ? 'ok' : 'pend'}">${r._sync === 'ok' ? 'En la nube' : 'Por subir'}</span></div>
+    return `<a class="tarjeta item" href="#/${editable(r) ? 'capturar' : 'ver'}/${r.id}">
+      <div class="fila"><b>${C.fechaCorta(r.fecha)}${gestor() ? ' · ' + esc(r.autor || 'Sin nombre') : ''}</b><span class="chip ${r._subido && r._sync === 'ok' ? 'ok' : 'pend'}">${r._subido && r._sync === 'ok' ? 'En la nube' : 'Por subir'}</span></div>
       <div class="peq">${m ? C.fmtM(m) + ' de tubería · ' : ''}${r.personal !== undefined ? r.personal + ' personas · ' : ''}${(r.fotos || []).length} fotos</div></a>`;
   }).join('') : '<p class="peq">Aún no hay capturas.</p>'}
   <a class="btn grande" href="#/capturar">+ Nueva captura</a>`;
@@ -282,7 +456,7 @@ function vHistorial() {
 
 async function vFotos() {
   const fs = records.filter(r => !r.borrado).flatMap(r => (r.fotos || []).map(f => ({ ...f, fecha: f.fecha || r.fecha, autor: r.autor }))).sort((a, b) => (a.fecha < b.fecha ? 1 : -1));
-  main().innerHTML = `<h1>Fotografías</h1><div class="galeria">${fs.map(f => `<figure data-id="${f.id}"><div class="ph"></div><figcaption>${esc(f.frente)} ${f.caption ? '· ' + esc(f.caption) : ''}<br><span class="peq">${C.fechaCorta(f.fecha)} · ${esc(f.autor || '')}</span></figcaption></figure>`).join('') || '<p class="peq">Sin fotos.</p>'}</div>`;
+  main().innerHTML = `<h1>${gestor() ? 'Fotografías' : 'Mis fotografías'}</h1><div class="galeria">${fs.map(f => `<figure data-id="${f.id}"><div class="ph"></div><figcaption>${esc(f.frente)} ${f.caption ? '· ' + esc(f.caption) : ''}<br><span class="peq">${C.fechaCorta(f.fecha)}${gestor() ? ' · ' + esc(f.autor || '') : ''}</span></figcaption></figure>`).join('') || '<p class="peq">Sin fotos.</p>'}</div>`;
   for (const fig of main().querySelectorAll('figure')) {
     sync.getPhoto(obra.id, fig.dataset.id).then(b => {
       const ph = fig.querySelector('.ph');
@@ -292,17 +466,131 @@ async function vFotos() {
   }
 }
 
-function vObra() {
-  const o = obra;
-  main().innerHTML = `<h1>Datos de la obra</h1>
-  <form id="fo" class="form">
+// ---------- Cuenta ----------
+function vCuenta() {
+  if (sync.state.needsLogin) return vLoginRenovar();
+  const s = ses(), st = sync.state;
+  main().innerHTML = `<h1>Mi cuenta</h1>
+  <div class="tarjeta"><table><tbody>
+    <tr><td>Nombre</td><td class="r">${esc(s.usuario.nombre)}</td></tr>
+    <tr><td>Usuario</td><td class="r">${esc(s.usuario.usuario)}</td></tr>
+    <tr><td>Rol</td><td class="r">${ROL_NOMBRE[s.usuario.rol]}</td></tr>
+    <tr><td>Obra actual</td><td class="r"><a href="#/obra">${esc(s.obras.find(o => o.id === settings.obraId)?.nombre || 'Elegir')}</a></td></tr>
+    <tr><td>Por subir</td><td class="r">${st.pending}</td></tr>
+    <tr><td>Última sincronización</td><td class="r">${st.lastSync ? new Date(st.lastSync).toLocaleString('es-MX') : '—'}</td></tr>
+  </tbody></table></div>
+  <button class="btn sec" id="sincro">Sincronizar ahora</button>
+  <button class="btn peligro" id="salir">Cerrar sesión</button>
+  <p class="peq">Versión ${window.APP_VERSION}</p>`;
+  $('#sincro').onclick = () => { pedirSync(); toast(navigator.onLine ? 'Sincronizando…' : 'Sin señal: se subirá cuando regrese'); };
+  $('#salir').onclick = async () => {
+    const p = sync.state.pending;
+    if (p && !confirm(`Hay ${p} cambios sin subir. Si cierras sesión SE PERDERÁN. ¿Cerrar sesión de todos modos?`)) return;
+    if (!p && !confirm('¿Cerrar sesión en este teléfono?')) return;
+    await sync.logout();
+    location.hash = '';
+    await cargar();
+    render();
+  };
+}
+
+function vLoginRenovar() {
+  vLogin(true);
+}
+
+// ---------- Portal del administrador ----------
+async function vAdmin(sub = 'usuarios', id, q) {
+  const tabs = [['usuarios', 'Usuarios'], ['obras', 'Obras'], ['onedrive', 'OneDrive']];
+  const activo = sub === 'usuario' ? 'usuarios' : sub === 'obra' ? 'obras' : sub;
+  main().innerHTML = `<h1>Administración</h1>
+  <div class="tabs">${tabs.map(([k, t]) => `<a href="#/admin/${k}" class="${k === activo ? 'activo' : ''}">${t}</a>`).join('')}</div>
+  <div id="adm"><p class="peq">Cargando…</p></div>`;
+  if (!navigator.onLine) { $('#adm').innerHTML = '<p>El portal necesita señal.</p>'; return; }
+  try {
+    if (sub === 'usuarios') await admUsuarios();
+    else if (sub === 'usuario') await admUsuario(id);
+    else if (sub === 'obras') await admObras();
+    else if (sub === 'obra') await admObra(id);
+    else if (sub === 'onedrive') await admOneDrive(q);
+    else location.replace('#/admin/usuarios');
+  } catch (e) {
+    $('#adm').innerHTML = `<p class="neg">${esc(e.message)}</p>`;
+  }
+}
+
+async function admUsuarios() {
+  const [{ usuarios }, { obras }] = await Promise.all([sync.api('/admin/usuarios'), sync.api('/admin/obras')]);
+  const nombreObra = id => obras.find(o => o.id === id)?.nombre || id;
+  $('#adm').innerHTML = `<a class="btn" href="#/admin/usuario/nuevo">+ Nuevo usuario</a>
+  ${usuarios.map(u => `<a class="tarjeta item" href="#/admin/usuario/${u.id}">
+    <div class="fila"><b>${esc(u.nombre)}</b><span class="chip ${u.activo ? 'ok' : 'pend'}">${u.activo ? ROL_NOMBRE[u.rol] : 'Desactivado'}</span></div>
+    <div class="peq">${esc(u.usuario)} · ${u.rol === 'admin' ? 'Todas las obras' : (u.obras.map(nombreObra).map(esc).join(', ') || 'Sin obras asignadas')}</div></a>`).join('')}`;
+}
+
+async function admUsuario(id) {
+  const nuevo = id === 'nuevo';
+  const [{ usuarios }, { obras }] = await Promise.all([sync.api('/admin/usuarios'), sync.api('/admin/obras')]);
+  const u = nuevo ? { nombre: '', usuario: '', rol: 'supervisor', activo: true, obras: [] } : usuarios.find(x => x.id === id);
+  if (!u) { location.replace('#/admin/usuarios'); return; }
+  $('#adm').innerHTML = `<form id="fu" class="form">
+    <fieldset><legend>${nuevo ? 'Nuevo usuario' : 'Editar usuario'}</legend>
+      <label>Nombre completo<input name="nombre" value="${esc(u.nombre)}" required></label>
+      <label>Usuario (para entrar)<input name="usuario" value="${esc(u.usuario)}" ${nuevo ? 'required' : 'disabled'} autocapitalize="none" autocorrect="off" spellcheck="false" pattern="[a-zA-Z0-9._\\-]{3,40}" title="Letras, números, punto, guion o guion bajo (3 a 40)"></label>
+      <label>Rol<select name="rol">${['supervisor', 'gerente', 'admin'].map(r => `<option value="${r}" ${u.rol === r ? 'selected' : ''}>${ROL_NOMBRE[r]}</option>`).join('')}</select></label>
+      <p class="peq" id="rolAyuda"></p>
+      <label>${nuevo ? 'Contraseña' : 'Nueva contraseña'} <span class="peq">${nuevo ? 'mínimo 8 caracteres' : '(déjala vacía para no cambiarla)'}</span><input name="password" type="text" autocomplete="new-password" ${nuevo ? 'required' : ''} minlength="8"></label>
+      ${nuevo ? '' : `<label class="check"><input type="checkbox" name="activo" ${u.activo ? 'checked' : ''}> Activo (puede entrar)</label>`}
+    </fieldset>
+    <fieldset id="fsObras"><legend>Obras asignadas</legend>
+      ${obras.map(o => `<label class="check"><input type="checkbox" name="obra" value="${esc(o.id)}" ${u.obras.includes(o.id) ? 'checked' : ''}> ${esc(o.nombre)}${o.activa ? '' : ' <span class="peq">(inactiva)</span>'}</label>`).join('') || '<p class="peq">Aún no hay obras.</p>'}
+    </fieldset>
+    <p id="errU" class="neg"></p>
+    <button class="btn grande">Guardar</button>
+    <a class="btn sec" href="#/admin/usuarios">Cancelar</a>
+  </form>`;
+  const f = $('#fu');
+  const ayuda = { supervisor: 'Solo captura y sube fotos en sus obras. Ve únicamente sus propias capturas y fotos; no puede modificar ni borrar lo que ya subió.', gerente: 'Ve el tablero y todas las capturas de sus obras; puede editar y eliminar capturas y fotos de esas obras.', admin: 'Acceso total: todas las obras, usuarios y este portal.' };
+  const pintarRol = () => { $('#rolAyuda').textContent = ayuda[f.rol.value]; $('#fsObras').hidden = f.rol.value === 'admin'; };
+  f.rol.onchange = pintarRol; pintarRol();
+  f.onsubmit = async e => {
+    e.preventDefault();
+    const fd = new FormData(f);
+    const datos = { nombre: fd.get('nombre').trim(), rol: fd.get('rol'), obras: fd.getAll('obra') };
+    if (fd.get('password')) datos.password = fd.get('password');
+    try {
+      if (nuevo) await sync.api('/admin/usuarios', { method: 'POST', json: { ...datos, usuario: fd.get('usuario').trim() } });
+      else await sync.api('/admin/usuarios/' + id, { method: 'PUT', json: { ...datos, activo: !!fd.get('activo') } });
+      toast('Usuario guardado');
+      location.hash = '#/admin/usuarios';
+    } catch (err) { $('#errU').textContent = err.message; }
+  };
+}
+
+async function admObras() {
+  const { obras } = await sync.api('/admin/obras');
+  $('#adm').innerHTML = `<a class="btn" href="#/admin/obra/nueva">+ Nueva obra</a>
+  ${obras.map(o => `<a class="tarjeta item" href="#/admin/obra/${esc(o.id)}">
+    <div class="fila"><b>${esc(o.nombre)}</b><span class="chip ${o.activa ? 'ok' : 'pend'}">${o.activa ? 'Activa' : 'Inactiva'}</span></div>
+    <div class="peq">${esc(o.localidad || '')} · ${C.fechaCorta(o.inicio)} al ${C.fechaCorta(o.fin)}</div></a>`).join('') || '<p class="peq">Aún no hay obras. Si ya tenías datos en OneDrive, impórtalos en la pestaña OneDrive.</p>'}`;
+}
+
+const OBRA_VACIA = { nombre: '', localidad: '', cliente: '', concurso: '', fechaConcurso: '', inicio: C.hoy(), fin: C.hoy(), montoTotal: 0, programaMensual: [], grupos: [], conceptos: [], tramos: [], activa: true };
+
+async function admObra(id) {
+  const nueva = id === 'nueva';
+  const { obras } = await sync.api('/admin/obras');
+  const o = nueva ? { ...OBRA_VACIA } : obras.find(x => x.id === id);
+  if (!o) { location.replace('#/admin/obras'); return; }
+  $('#adm').innerHTML = `<form id="fo" class="form">
     <fieldset><legend>Generales</legend>
-      <label>Nombre<input name="nombre" value="${esc(o.nombre)}"></label>
+      <label>Nombre<input name="nombre" value="${esc(o.nombre)}" required></label>
+      ${nueva ? '<label>Identificador <span class="peq">(se genera del nombre; no se puede cambiar después)</span><input name="id" pattern="[a-z0-9\\-]{3,60}" required></label>' : `<p class="peq">Identificador: ${esc(o.id)}</p>`}
       <label>Localidad<input name="localidad" value="${esc(o.localidad)}"></label>
       <label>Cliente<input name="cliente" value="${esc(o.cliente)}"></label>
       <div class="dos"><label>Concurso No.<input name="concurso" value="${esc(o.concurso)}"></label><label>Fecha concurso<input type="date" name="fechaConcurso" value="${esc(o.fechaConcurso)}"></label></div>
-      <div class="dos"><label>Inicio de obra<input type="date" name="inicio" value="${esc(o.inicio)}"></label><label>Fin de obra<input type="date" name="fin" value="${esc(o.fin)}"></label></div>
-      <label>Monto total del programa ($)<input name="montoTotal" inputmode="decimal" value="${o.montoTotal}"></label>
+      <div class="dos"><label>Inicio de obra<input type="date" name="inicio" value="${esc(o.inicio)}" required></label><label>Fin de obra<input type="date" name="fin" value="${esc(o.fin)}" required></label></div>
+      <label>Monto total del programa ($)<input name="montoTotal" inputmode="decimal" value="${o.montoTotal ?? 0}"></label>
+      <label class="check"><input type="checkbox" name="activa" ${o.activa !== false ? 'checked' : ''}> Obra activa (visible para los usuarios asignados)</label>
     </fieldset>
     <fieldset><legend>Tramos de tubería</legend>
       <p class="peq">Una línea por tramo: Frente | Diámetro | Longitud total (m) | Nota de zanja | Metros instalados iniciales | Fecha inicial</p>
@@ -321,94 +609,83 @@ function vObra() {
       <textarea name="conceptos" rows="6" placeholder="Pega aquí desde Excel">${esc(o.conceptos.map(k => [k.clave, k.descripcion, k.grupo, k.importe, C.fechaCorta(k.inicio), C.fechaCorta(k.fin)].join('\t')).join('\n'))}</textarea>
     </fieldset>
     <p id="errObra" class="neg"></p>
-    <button class="btn grande">Guardar datos de la obra</button>
+    <button class="btn grande">Guardar obra</button>
+    <a class="btn sec" href="#/admin/obras">Cancelar</a>
   </form>`;
+  const f = $('#fo');
+  const slug = s => s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
+  if (nueva) f.nombre.oninput = () => { if (!f.id.dataset.tocado) f.id.value = slug(f.nombre.value); };
+  if (nueva) f.id.oninput = () => { f.id.dataset.tocado = '1'; };
   const fecha = s => { s = String(s).trim(); const m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})$/); if (m) return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`; if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s; throw new Error('Fecha no válida: ' + s); };
   const lineas = t => t.split('\n').map(l => l.trim()).filter(Boolean);
-  $('#fo').onsubmit = async e => {
+  f.onsubmit = async e => {
     e.preventDefault();
-    const fd = new FormData(e.target);
+    const fd = new FormData(f);
     try {
       const n = { ...o };
       for (const k of ['nombre', 'localidad', 'cliente', 'concurso', 'fechaConcurso', 'inicio', 'fin']) n[k] = fd.get(k);
-      n.montoTotal = num(fd.get('montoTotal'));
+      n.montoTotal = num(fd.get('montoTotal')) || 0;
+      n.activa = !!fd.get('activa');
       n.tramos = lineas(fd.get('tramos')).map((l, i) => {
         const [frente, diametro, lon, zanja, mi, fi] = l.split('|').map(x => x.trim());
-        const prev = o.tramos[i];
-        const id = prev && prev.frente === frente && prev.diametro === diametro ? prev.id : (frente + '-' + diametro).toLowerCase().replace(/[^a-z0-9]+/g, '-');
-        return { id, frente, diametro, longitud: num(lon), zanja, ...(mi ? { inicial: { metros: num(mi), fecha: fi ? fecha(fi) : n.inicio } } : {}) };
+        const prev = o.tramos.find(t => t.frente === frente && t.diametro === diametro) || null;
+        const idT = prev ? prev.id : (slug(frente + '-' + diametro) || 't' + i);
+        return { id: idT, frente, diametro, longitud: num(lon), zanja, ...(mi ? { inicial: { metros: num(mi), fecha: fi ? fecha(fi) : n.inicio } } : {}) };
       });
       n.grupos = lineas(fd.get('grupos')).map((l, i) => {
         const [nombre, imp] = l.split('|').map(x => x.trim());
-        const prev = o.grupos.find(g => g.nombre === nombre) || o.grupos[i];
-        return { id: prev?.nombre === nombre ? prev.id : nombre.toLowerCase().normalize('NFD').replace(/[^a-z0-9]+/g, '').slice(0, 12) || 'g' + i, nombre, importe: num(imp) };
+        const prev = o.grupos.find(g => g.nombre === nombre);
+        return { id: prev ? prev.id : (slug(nombre).replace(/-/g, '').slice(0, 12) || 'g' + i), nombre, importe: num(imp) };
       });
-      n.programaMensual = lineas(fd.get('mensual')).map(l => { const [mes, m] = l.split('|').map(x => x.trim()); return { mes, monto: num(m) }; });
+      n.programaMensual = lineas(fd.get('mensual')).map(l => { const [mes, m] = l.split('|').map(x => x.trim()); if (!/^\d{4}-\d{2}$/.test(mes)) throw new Error('Mes no válido: ' + mes); return { mes, monto: num(m) }; });
       n.conceptos = lineas(fd.get('conceptos')).map(l => {
         const c = l.split('\t');
         if (c.length < 6) throw new Error('Cada partida necesita 6 columnas separadas por tabulador (pegar desde Excel): ' + l.slice(0, 40));
         return { clave: c[0], descripcion: c[1], grupo: c[2], importe: num(c[3]), inicio: fecha(c[4]), fin: fecha(c[5]) };
       });
-      if ([n.montoTotal, ...n.tramos.map(t => t.longitud), ...n.grupos.map(g => g.importe)].some(v => v === undefined || isNaN(v))) throw new Error('Hay un número no válido.');
-      await guardarObra(n);
-      toast('Datos de la obra guardados');
-      location.hash = '#/tablero';
+      if ([...n.tramos.map(t => t.longitud), ...n.grupos.map(g => g.importe), ...n.programaMensual.map(m => m.monto)].some(v => v === undefined || isNaN(v))) throw new Error('Hay un número no válido.');
+      const oid = nueva ? fd.get('id').trim() : o.id;
+      if (nueva && obras.some(x => x.id === oid)) throw new Error('Ya existe una obra con ese identificador.');
+      const r = await sync.api('/admin/obras/' + oid, { method: 'PUT', json: n });
+      if (oid === settings.obraId) await db.kvSet('obra:' + oid, { ...n, id: oid, updatedAt: r.updatedAt });
+      toast('Obra guardada');
+      pedirSync();
+      location.hash = '#/admin/obras';
     } catch (err) { $('#errObra').textContent = err.message; }
   };
 }
 
-async function vAjustes() {
-  const cfg = await sync.cloudCfg();
-  const s = sync.state;
-  const persist = navigator.storage?.persisted ? await navigator.storage.persisted() : false;
-  main().innerHTML = `<h1>Ajustes</h1>
-  <form id="fa" class="form">
-    <fieldset><legend>Capturista</legend><label>Tu nombre<input name="autor" value="${esc(settings.autor)}"></label></fieldset>
-    <fieldset><legend>Nube (OneDrive)</legend>
-      <p>${s.configured ? (s.signedIn ? `Sesión: <b>${esc(s.user)}</b>` : 'Sin sesión') : 'No configurado: la app trabaja solo en este dispositivo.'}</p>
-      <label>Client ID de la app en Microsoft<input name="clientId" value="${esc(cfg.clientId)}" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"></label>
-      <label>Link de la carpeta compartida <span class="peq">(vacío = carpeta REMA-Reportes predeterminada)</span><input name="shareUrl" value="${esc(cfg.shareUrl)}" placeholder="https://1drv.ms/f/..."></label>
-      <button class="btn sec" type="submit">Guardar ajustes</button>
-      ${s.configured ? (s.signedIn && !s.needsLogin ? '<button class="btn sec" type="button" id="sincro">Sincronizar ahora</button><button class="btn sec" type="button" id="salir">Cerrar sesión</button>' : '<button class="btn" type="button" id="entrar">Iniciar sesión con Microsoft</button>') : ''}
-    </fieldset>
-    <fieldset><legend>Respaldo</legend>
-      <p class="peq">Almacenamiento protegido: ${persist ? 'sí' : 'no (el sistema podría borrarlo si falta espacio)'} · ${s.pending} cambios por subir.</p>
-      <button class="btn sec" type="button" id="exportar">Exportar respaldo (JSON)</button>
-      <label class="btn sec">Importar respaldo<input type="file" id="importar" accept="application/json" hidden></label>
-    </fieldset>
-    <p class="peq">Versión ${window.APP_VERSION}</p>
-  </form>`;
-  $('#fa').onsubmit = async e => {
-    e.preventDefault();
-    const fd = new FormData(e.target);
-    settings.autor = fd.get('autor').trim();
-    await db.kvSet('settings', settings);
-    const n = { clientId: fd.get('clientId').trim(), shareUrl: fd.get('shareUrl').trim() };
-    const cambio = n.clientId !== cfg.clientId || n.shareUrl !== cfg.shareUrl;
-    await db.kvSet('cloud', n);
-    if (cambio) { await db.kvSet('root', null); location.reload(); } else toast('Guardado');
-  };
-  $('#entrar')?.addEventListener('click', () => sync.login().catch(err => alert(err.message)));
-  $('#salir')?.addEventListener('click', () => { if (sync.state.pending && !confirm(`Hay ${sync.state.pending} cambios sin subir. Se quedan en el teléfono. ¿Cerrar sesión?`)) return; sync.logout(); });
-  $('#sincro')?.addEventListener('click', () => pedirSync());
-  $('#exportar').onclick = async () => {
-    const data = { app: 'rema-reportes', fecha: new Date().toISOString(), obra, records: records.map(r => ({ ...r })) };
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' }));
-    a.download = `respaldo-${obra.id}-${C.hoy()}.json`; a.click();
-  };
-  $('#importar').onchange = async e => {
-    const f = e.target.files[0]; if (!f) return;
-    try {
-      const data = JSON.parse(await f.text());
-      if (data.app !== 'rema-reportes') throw new Error('No es un respaldo de esta app.');
-      if (!confirm(`Importar ${data.records.length} capturas de "${data.obra.nombre}"? Las capturas con el mismo identificador se reemplazan.`)) return;
-      await guardarObra(data.obra);
-      settings.obraId = data.obra.id; await db.kvSet('settings', settings);
-      for (const r of data.records) await guardarRecord({ ...r, obraId: data.obra.id });
-      toast('Respaldo importado'); location.hash = '#/tablero';
-    } catch (err) { alert(err.message); }
-  };
+async function admOneDrive(q) {
+  const res = q?.get('resultado');
+  const msg = { ok: 'OneDrive conectado.', cancelado: 'Se canceló la conexión.', expirado: 'El enlace de conexión venció; inténtalo de nuevo.', error: 'No se pudo conectar OneDrive. Inténtalo de nuevo.' }[res];
+  const e = await sync.api('/admin/onedrive');
+  $('#adm').innerHTML = `${msg ? `<p class="${res === 'ok' ? 'pos' : 'neg'}">${msg}</p>` : ''}
+  <div class="tarjeta">
+    <h3>${e.conectado ? 'Conectado' : 'No conectado'}</h3>
+    <p class="peq">${e.conectado ? `Cuenta: ${esc(e.cuenta?.nombre || '')} ${esc(e.cuenta?.correo || '')}<br>Las capturas y fotos se guardan en la carpeta REMA-Reportes de esa cuenta.`
+      : 'Conecta el OneDrive donde se guardarán las capturas y fotos. Solo se hace una vez; los demás usuarios no necesitan cuenta de Microsoft.'}</p>
+  </div>
+  <button class="btn" id="conectar">${e.conectado ? 'Volver a conectar' : 'Conectar OneDrive'}</button>
+  ${e.conectado ? `<button class="btn sec" id="importar">Importar datos que ya estaban en OneDrive</button>
+  <button class="btn sec" id="respaldar">Respaldar pendientes en OneDrive</button>
+  <button class="btn peligro" id="desconectar">Desconectar OneDrive</button>` : ''}
+  <p id="resOD" class="peq"></p>`;
+  $('#conectar').onclick = async () => { try { location.href = (await sync.api('/admin/onedrive/iniciar', { method: 'POST' })).url; } catch (err) { $('#resOD').textContent = err.message; } };
+  $('#importar')?.addEventListener('click', async ev => {
+    ev.target.disabled = true; $('#resOD').textContent = 'Importando…';
+    try { const r = await sync.api('/admin/importar', { method: 'POST' }); $('#resOD').textContent = `Importado: ${r.obras} obras, ${r.capturas} capturas, ${r.fotos} fotos. Asigna las obras a los usuarios en la pestaña Usuarios.`; pedirSync(); }
+    catch (err) { $('#resOD').textContent = err.message; }
+    ev.target.disabled = false;
+  });
+  $('#respaldar')?.addEventListener('click', async () => {
+    try { const r = await sync.api('/admin/respaldar', { method: 'POST' }); $('#resOD').textContent = `Respaldadas: ${r.procesadas}. Pendientes: ${r.pendientes}.`; }
+    catch (err) { $('#resOD').textContent = err.message; }
+  });
+  $('#desconectar')?.addEventListener('click', async () => {
+    if (!confirm('¿Desconectar OneDrive? No se podrán subir fotos hasta volver a conectarlo.')) return;
+    await sync.api('/admin/onedrive/desconectar', { method: 'POST' });
+    admOneDrive();
+  });
 }
 
 function toast(t) {
@@ -418,16 +695,15 @@ function toast(t) {
 
 // ---------- Arranque ----------
 async function start() {
+  await sync.init();
   await cargar();
-  sync.onChange(pintarEstado);
+  sync.onChange(st => { pintarEstado(st); });
   window.addEventListener('hashchange', render);
   window.addEventListener('online', () => { pintarEstado(); pedirSync(); });
   window.addEventListener('offline', () => pintarEstado());
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') pedirSync(); });
   setInterval(() => { if (navigator.onLine) pedirSync(); }, 60000);
   render();
-  await sync.init();
-  pintarEstado();
   pedirSync();
 }
 

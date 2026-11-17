@@ -13,24 +13,17 @@
   <meta name="apple-mobile-web-app-title" content="REMA Avance">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <link rel="stylesheet" href="styles.css">
-  <script>window.APP_VERSION = '0.1.7';</script>
-  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@2.38.3/lib/msal-browser.min.js" defer></script>
+  <script>window.APP_VERSION = '0.2.0';</script>
   <script type="module" src="js/app.js"></script>
 </head>
 <body>
   <header class="top">
-    <span class="marca">REMA · Avance semanal</span>
+    <div class="fila-top"><span class="marca">REMA · Avance semanal</span><a id="quien" href="#/cuenta" hidden></a></div>
+    <div id="obraActual" class="obra-actual"></div>
     <div id="estado" class="estado">Cargando…</div>
   </header>
   <main id="main"></main>
-  <nav>
-    <a href="#/tablero">Tablero</a>
-    <a href="#/capturar">Capturar</a>
-    <a href="#/historial">Capturas</a>
-    <a href="#/fotos">Fotos</a>
-    <a href="#/obra">Obra</a>
-    <a href="#/ajustes">Ajustes</a>
-  </nav>
+  <nav hidden></nav>
   <div id="toast" class="toast"></div>
 </body>
 </html>

@@ -1,12 +1,11 @@
 // Service worker: deja la app completa guardada en el teléfono para abrirla sin señal.
-const VERSION = 'rema-v0.1.7';
+const VERSION = 'rema-v0.2.0';
 const SHELL = [
   './', './index.html', './styles.css', './manifest.webmanifest',
-  './js/app.js', './js/db.js', './js/calc.js', './js/sync.js', './js/seed.js', './js/pptx.js',
+  './js/app.js', './js/db.js', './js/calc.js', './js/sync.js', './js/pptx.js',
   './icons/icon-192.png', './icons/icon-512.png',
 ];
 const LIBS = [
-  'https://cdn.jsdelivr.net/npm/@azure/msal-browser@2.38.3/lib/msal-browser.min.js',
   'https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js',
 ];
 
@@ -31,7 +30,7 @@ self.addEventListener('fetch', e => {
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
   // Nunca cachear llamadas a Microsoft (datos y sesión).
-  if (/graph\.microsoft\.com|login\.microsoftonline\.com|login\.live\.com|1drv|sharepoint/.test(url.host)) return;
+  if (url.origin !== location.origin && !LIBS.includes(req.url)) return; // API y otros: siempre a la red
 
   if (req.mode === 'navigate') {
     e.respondWith(redPrimero(req, './index.html'));

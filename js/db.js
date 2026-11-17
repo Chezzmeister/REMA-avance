@@ -34,6 +34,7 @@ function run(store, mode, fn) {
 
 export const get = (store, key) => run(store, 'readonly', s => s.get(key));
 export const all = (store) => run(store, 'readonly', s => s.getAll());
+export const keys = (store) => run(store, 'readonly', s => s.getAllKeys());
 export const put = (store, val, key) => run(store, 'readwrite', s => (key === undefined ? s.put(val) : s.put(val, key)));
 export const del = (store, key) => run(store, 'readwrite', s => s.delete(key));
 export const clear = (store) => run(store, 'readwrite', s => s.clear());
