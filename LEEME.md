@@ -17,41 +17,13 @@ Calcula sola los indicadores y genera el PPTX del reporte semanal.
   lo capturado sigue guardado y sube al iniciar sesión.
 - En iPhone hay que **agregarla a la pantalla de inicio** (Compartir → Agregar a inicio). Así iOS no borra sus datos.
 
-## Estructura en OneDrive
+## Arquitectura
 ```
-REMA-Reportes/obras/<obra>/obra.json            datos base de la obra
-REMA-Reportes/obras/<obra>/capturas/<id>.json   una captura por archivo
-REMA-Reportes/obras/<obra>/fotos/<id>.jpg
+App (GitHub Pages) ──usuario y contraseña──▶ Intermediario (Cloudflare Worker + D1) ──▶ OneDrive del administrador
 ```
-Como cada captura es un archivo distinto, varios residentes pueden subir al mismo tiempo sin pisarse.
-
-## Cálculos
-| Indicador | Cálculo |
-|---|---|
-| Plazo transcurrido | día de corte − inicio + 1, entre la duración |
-| Tubería | metros iniciales + metros capturados, por tramo, diámetro y frente |
-| Programa a la fecha | prorrateo lineal de cada partida del AE10 (o del programa mensual si no hay partidas) |
-| Avance físico real | % por grupo (último capturado) ponderado por el importe del grupo |
-| Avance financiero | importe ejecutado acumulado (último capturado) entre el monto total |
-| Desviación | físico real − programa |
-
-## Datos de la obra
-El código es público, así que los datos de la obra no viven aquí: se cargan con *Ajustes → Importar respaldo*
-y, una vez en OneDrive, los demás teléfonos los bajan solos.
-
-## Pendiente para salir a campo
-1. **Partidas del AE10**: pegar las 36 partidas en *Obra* (Clave, Descripción, Grupo, Importe, Inicio, Fin).
-   Sin ellas, el programa se estima prorrateando el programa mensual.
-2. **Publicar** la carpeta `app/` en un hosting gratuito con HTTPS (GitHub Pages, Netlify o Cloudflare Pages).
-3. **Registrar la app en Microsoft Entra** (gratis) para obtener el *Client ID*:
-   - Tipo de cuenta: "Cuentas personales de Microsoft y de cualquier organización".
-   - Plataforma: *Single-page application*, URI de redirección = la URL publicada.
-   - Permisos delegados de Graph: `User.Read`, `Files.ReadWrite.All`.
-4. En OneDrive, crear la carpeta `REMA-Reportes`, compartirla **con permiso de edición** a cada residente
-   y pegar el link en *Ajustes → Link de la carpeta compartida* de cada teléfono.
-
-## Probar en esta computadora
-```bash
-python -m http.server 8765 --directory app
-```
-Abrir http://localhost:8765
+- Usuarios, roles, obras y capturas viven en la base de datos D1; las fotos y un respaldo de cada captura en
+  `REMA-Reportes/obras/<obra>/` del OneDrive conectado en el portal.
+- Roles: **Administrador** (todo + portal), **Gerente** (tablero, edita y elimina en sus obras),
+  **Supervisor** (solo captura y sube fotos; ve solo lo suyo y no puede modificar lo ya subido).
+- Los permisos los aplica el intermediario; la app solo oculta lo que no corresponde.
+- Código del intermediario: carpeta `worker/` del proyecto (no se publica en este repositorio).

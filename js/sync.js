@@ -5,7 +5,7 @@
 //  - Los permisos los decide el intermediario; la app solo esconde lo que no aplica.
 import * as db from './db.js';
 
-const API_PROD = 'https://rema-api.REEMPLAZAR.workers.dev/api';
+const API_PROD = 'https://rema-api.canorema-avance.workers.dev/api';
 export const API = ['localhost', '127.0.0.1'].includes(location.hostname) ? 'http://127.0.0.1:8787/api' : API_PROD;
 
 let running = null;
