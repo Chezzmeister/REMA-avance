@@ -365,7 +365,7 @@ async function vAjustes() {
     <fieldset><legend>Nube (OneDrive)</legend>
       <p>${s.configured ? (s.signedIn ? `Sesión: <b>${esc(s.user)}</b>` : 'Sin sesión') : 'No configurado: la app trabaja solo en este dispositivo.'}</p>
       <label>Client ID de la app en Microsoft<input name="clientId" value="${esc(cfg.clientId)}" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"></label>
-      <label>Link de la carpeta compartida <span class="peq">(vacío = carpeta REMA-Reportes en tu OneDrive)</span><input name="shareUrl" value="${esc(cfg.shareUrl)}" placeholder="https://1drv.ms/f/..."></label>
+      <label>Link de la carpeta compartida <span class="peq">(vacío = carpeta REMA-Reportes predeterminada)</span><input name="shareUrl" value="${esc(cfg.shareUrl)}" placeholder="https://1drv.ms/f/..."></label>
       <button class="btn sec" type="submit">Guardar ajustes</button>
       ${s.configured ? (s.signedIn && !s.needsLogin ? '<button class="btn sec" type="button" id="sincro">Sincronizar ahora</button><button class="btn sec" type="button" id="salir">Cerrar sesión</button>' : '<button class="btn" type="button" id="entrar">Iniciar sesión con Microsoft</button>') : ''}
     </fieldset>

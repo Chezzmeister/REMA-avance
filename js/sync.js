@@ -21,10 +21,12 @@ function emit(patch) { Object.assign(state, patch); listeners.forEach(fn => fn(s
 
 // Client ID del registro "REMA Avance" en Microsoft Entra. Es público (no es una contraseña).
 const CLIENT_ID = 'c83db146-c363-4306-9b3d-59a5f2d6c7df';
+// Carpeta REMA-Reportes compartida. Solo la abren las cuentas invitadas desde OneDrive.
+const SHARE_URL = 'https://1drv.ms/f/c/d1d66cb62bcda0bd/AipGFNHJ_bpKizdiX_iA8Rw?e=GZE9BG';
 
 export async function cloudCfg() {
   const c = await db.kvGet('cloud', {});
-  return { clientId: c.clientId || CLIENT_ID, shareUrl: c.shareUrl || '' };
+  return { clientId: c.clientId || CLIENT_ID, shareUrl: c.shareUrl || SHARE_URL };
 }
 
 async function refreshPending() { emit({ pending: (await db.all('outbox')).length }); }
