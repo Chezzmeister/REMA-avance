@@ -1,5 +1,5 @@
 // Service worker: deja la app completa guardada en el teléfono para abrirla sin señal.
-const VERSION = 'rema-v0.1.5';
+const VERSION = 'rema-v0.1.6';
 const SHELL = [
   './', './index.html', './styles.css', './manifest.webmanifest',
   './js/app.js', './js/db.js', './js/calc.js', './js/sync.js', './js/seed.js', './js/pptx.js',
@@ -13,7 +13,7 @@ const LIBS = [
 self.addEventListener('install', e => {
   e.waitUntil((async () => {
     const c = await caches.open(VERSION);
-    await c.addAll(SHELL);
+    await c.addAll(SHELL.map(u => new Request(u, { cache: 'reload' })));
     await Promise.all(LIBS.map(u => c.add(new Request(u, { mode: 'cors' })).catch(() => {})));
     self.skipWaiting();
   })());
