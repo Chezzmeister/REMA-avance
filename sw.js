@@ -1,5 +1,5 @@
 // Service worker: deja la app completa guardada en el teléfono para abrirla sin señal.
-const VERSION = 'rema-v0.1.2';
+const VERSION = 'rema-v0.1.3';
 const SHELL = [
   './', './index.html', './styles.css', './manifest.webmanifest',
   './js/app.js', './js/db.js', './js/calc.js', './js/sync.js', './js/seed.js', './js/pptx.js',
@@ -34,16 +34,30 @@ self.addEventListener('fetch', e => {
   if (/graph\.microsoft\.com|login\.microsoftonline\.com|login\.live\.com|1drv|sharepoint/.test(url.host)) return;
 
   if (req.mode === 'navigate') {
-    e.respondWith(fetch(req).then(r => { const cp = r.clone(); caches.open(VERSION).then(c => c.put('./index.html', cp)); return r; })
-      .catch(() => caches.match('./index.html')));
+    e.respondWith(redPrimero(req, './index.html'));
     return;
   }
-  const esLib = LIBS.includes(req.url);
-  if (url.origin === location.origin || esLib) {
-    // Caché primero y actualiza en segundo plano.
-    e.respondWith(caches.match(req, { ignoreSearch: url.origin === location.origin }).then(hit => {
-      const net = fetch(req).then(r => { if (r.ok) { const cp = r.clone(); caches.open(VERSION).then(c => c.put(req, cp)); } return r; }).catch(() => hit);
-      return hit || net;
-    }));
+  if (LIBS.includes(req.url)) {
+    // Librerías con versión fija: siempre de la caché.
+    e.respondWith(caches.match(req).then(hit => hit || fetch(req)));
+  } else if (url.origin === location.origin) {
+    e.respondWith(redPrimero(req, req));
   }
 });
+
+// Con señal buena se baja la versión más nueva; si la red falla o tarda más de 3 s
+// (señal débil en obra), se usa la copia guardada.
+function redPrimero(req, clave) {
+  const red = fetch(req).then(r => {
+    if (r.ok) { const cp = r.clone(); caches.open(VERSION).then(c => c.put(clave, cp)); }
+    return r;
+  });
+  const guardado = () => caches.match(clave, { ignoreSearch: true });
+  return new Promise(resolve => {
+    let listo = false;
+    const usar = r => { if (!listo && r) { listo = true; resolve(r); } };
+    const t = setTimeout(() => guardado().then(usar), 3000);
+    red.then(r => { clearTimeout(t); usar(r); })
+      .catch(() => { clearTimeout(t); guardado().then(r => (r ? usar(r) : usar(Response.error()))); });
+  });
+}
