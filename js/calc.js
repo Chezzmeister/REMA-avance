@@ -29,7 +29,7 @@ function ultimo(records, corte, getter) {
 
 export function montoTotal(obra) {
   if (obra.conceptos?.length) return obra.conceptos.reduce((s, k) => s + (+k.importe || 0), 0);
-  return +obra.montoTotal || obra.programaMensual.reduce((s, m) => s + m.monto, 0);
+  return +obra.montoTotal || (obra.programaMensual || []).reduce((s, m) => s + m.monto, 0);
 }
 
 export function plazo(obra, corte) {
@@ -54,12 +54,12 @@ export function programa(obra, corte) {
   if (obra.conceptos?.length) {
     metodo = 'conceptos';
     for (const k of obra.conceptos) {
-      const a = d2n(k.inicio), b = d2n(k.fin);
+      const a = d2n(k.inicio || obra.inicio), b = d2n(k.fin || obra.fin);
       importe += (+k.importe || 0) * clamp01((c - a + 1) / (b - a + 1));
     }
   } else {
     metodo = 'mensual';
-    for (const m of obra.programaMensual) {
+    for (const m of (obra.programaMensual || [])) {
       const [a, b] = rangoMes(m.mes, obra);
       importe += m.monto * clamp01((c - a + 1) / (b - a + 1));
     }
@@ -67,13 +67,18 @@ export function programa(obra, corte) {
   return { importe, total, pct: total ? importe / total : 0, metodo };
 }
 
-// Programa por mes (periodo y acumulado).
+// Programa por mes (periodo y acumulado). Si el AE10 trae el reparto por mes, se usa tal cual;
+// si no, se reparte el importe de cada partida día a día entre su inicio y su fin.
 export function periodos(obra) {
   let porMes;
   if (obra.conceptos?.length) {
     const map = {};
     for (const k of obra.conceptos) {
-      const a = d2n(k.inicio), b = d2n(k.fin), dias = b - a + 1;
+      if (k.periodos && Object.keys(k.periodos).length) {
+        for (const [mes, p] of Object.entries(k.periodos)) map[mes] = (map[mes] || 0) + (+p.importe || 0);
+        continue;
+      }
+      const a = d2n(k.inicio || obra.inicio), b = d2n(k.fin || obra.fin), dias = b - a + 1;
       for (let d = a; d <= b; d++) {
         const mes = n2d(d).slice(0, 7);
         map[mes] = (map[mes] || 0) + (+k.importe || 0) / dias;
@@ -81,19 +86,70 @@ export function periodos(obra) {
     }
     porMes = Object.keys(map).sort().map(mes => ({ mes, monto: map[mes] }));
   } else {
-    porMes = obra.programaMensual.slice().sort((a, b) => (a.mes < b.mes ? -1 : 1));
+    porMes = (obra.programaMensual || []).slice().sort((a, b) => (a.mes < b.mes ? -1 : 1));
   }
   const total = porMes.reduce((s, m) => s + m.monto, 0);
   let acum = 0;
   return porMes.map(m => {
     acum += m.monto;
-    return { mes: m.mes, nombre: nombreMes(m.mes), monto: m.monto, pct: m.monto / total, pctAcum: acum / total };
+    return { mes: m.mes, nombre: nombreMes(m.mes), monto: m.monto, pct: total ? m.monto / total : 0, pctAcum: total ? acum / total : 0 };
   });
 }
 
+// ---------- Avance por partida (obras con catálogo importado) ----------
+export const porPartidas = obra => !!obra.conceptos?.length;
+
+// Nombre del grupo de una partida al nivel elegido (1 = el más general).
+export function grupoDe(k, nivel) {
+  if (!k.ruta?.length) return 'Sin grupo';
+  return k.ruta[Math.min(nivel, k.ruta.length) - 1];
+}
+export const nivelGrupos = obra => obra.nivelGrupo || 1;
+
+// Cantidad ejecutada por partida al corte: avance inicial + capturas
+// (+ capturas antiguas de tubería, convertidas con obra.mapaLegado).
+export function ejecutado(obra, records, corte) {
+  const ej = {};
+  for (const [id, ini] of Object.entries(obra.inicial || {})) if (!ini.fecha || ini.fecha <= corte) ej[id] = (ej[id] || 0) + (+ini.cantidad || 0);
+  for (const r of vivos(records, corte)) {
+    for (const [id, v] of Object.entries(r.cantidades || {})) ej[id] = (ej[id] || 0) + (+v || 0);
+    for (const [t, v] of Object.entries(r.tuberia || {})) { const id = obra.mapaLegado?.[t]; if (id) ej[id] = (ej[id] || 0) + (+v || 0); }
+  }
+  return ej;
+}
+
+export function partidas(obra, records, corte) {
+  const ej = ejecutado(obra, records, corte);
+  const c = d2n(corte);
+  return obra.conceptos.map(k => {
+    const hecho = ej[k.id] || 0;
+    const frac = k.cantidad ? Math.min(1, hecho / k.cantidad) : 0;
+    const a = d2n(k.inicio || obra.inicio), b = d2n(k.fin || obra.fin);
+    const fracProg = clamp01((c - a + 1) / (b - a + 1));
+    return { ...k, ejecutado: hecho, pct: k.cantidad ? hecho / k.cantidad : 0, valor: k.importe * frac,
+      programado: k.cantidad * fracProg, pctProg: fracProg, restante: Math.max(0, k.cantidad - hecho), excede: hecho > k.cantidad * 1.0001 };
+  });
+}
+
+export function gruposPartidas(obra, filas) {
+  const nivel = nivelGrupos(obra);
+  const total = filas.reduce((s, k) => s + k.importe, 0);
+  const m = new Map();
+  for (const k of filas) {
+    const g = grupoDe(k, nivel);
+    const o = m.get(g) || { id: g, nombre: g, importe: 0, valor: 0, partidas: [] };
+    o.importe += k.importe; o.valor += k.valor; o.partidas.push(k);
+    m.set(g, o);
+  }
+  const lista = [...m.values()].map(g => ({ ...g, peso: total ? g.importe / total : 0, avance: g.importe ? g.valor / g.importe : 0 }));
+  const capturado = filas.some(k => k.ejecutado > 0);
+  return { filas: lista, total, fisico: capturado ? filas.reduce((s, k) => s + k.valor, 0) / total : null };
+}
+
+// ---------- Modo anterior (tramos de tubería y % por grupo) ----------
 export function tuberia(obra, records, corte) {
   const rs = vivos(records, corte);
-  const tramos = obra.tramos.map(t => {
+  const tramos = (obra.tramos || []).map(t => {
     let m = t.inicial && t.inicial.fecha <= corte ? +t.inicial.metros || 0 : 0;
     for (const r of rs) m += +(r.tuberia?.[t.id]) || 0;
     return { ...t, instalado: m, pct: t.longitud ? m / t.longitud : 0, restante: Math.max(0, t.longitud - m), excede: m > t.longitud };
@@ -109,8 +165,9 @@ export function tuberia(obra, records, corte) {
 }
 
 export function grupos(obra, records, corte) {
-  const total = obra.grupos.reduce((s, g) => s + g.importe, 0);
-  const filas = obra.grupos.map(g => {
+  const gs = obra.grupos || [];
+  const total = gs.reduce((s, g) => s + g.importe, 0);
+  const filas = gs.map(g => {
     const u = ultimo(records, corte, r => r.avanceGrupos?.[g.id]);
     return { ...g, peso: total ? g.importe / total : 0, avance: u ? +u.valor / 100 : null };
   });
@@ -122,8 +179,16 @@ export function grupos(obra, records, corte) {
 export function resumen(obra, records, corte) {
   const pl = plazo(obra, corte);
   const pr = programa(obra, corte);
-  const tu = tuberia(obra, records, corte);
-  const gr = grupos(obra, records, corte);
+  const modo = porPartidas(obra) ? 'partidas' : 'legado';
+  let gr, ps = null, destacados = [], tu = null;
+  if (modo === 'partidas') {
+    ps = partidas(obra, records, corte);
+    gr = gruposPartidas(obra, ps);
+    destacados = (obra.destacados || []).map(id => ps.find(k => k.id === id)).filter(Boolean);
+  } else {
+    gr = grupos(obra, records, corte);
+    tu = tuberia(obra, records, corte);
+  }
   const fin = ultimo(records, corte, r => r.importeEjecutado);
   const total = montoTotal(obra);
   const personal = ultimo(records, corte, r => r.personal);
@@ -132,7 +197,7 @@ export function resumen(obra, records, corte) {
   const semana = vivos(records, corte).filter(r => r.fecha >= desde);
   const textos = campo => semana.filter(r => r[campo]?.trim()).map(r => ({ texto: r[campo].trim(), autor: r.autor, fecha: r.fecha }));
   return {
-    corte, desde, plazo: pl, programa: pr, tuberia: tu, grupos: gr,
+    corte, desde, modo, plazo: pl, programa: pr, tuberia: tu, grupos: gr, partidas: ps, destacados,
     periodos: periodos(obra),
     fisico: gr.fisico,
     financiero: fin ? { importe: +fin.valor, pct: +fin.valor / total, fecha: fin.fecha } : null,
@@ -144,6 +209,8 @@ export function resumen(obra, records, corte) {
     fotos: semana.flatMap(r => (r.fotos || []).map(f => ({ ...f, fecha: f.fecha || r.fecha, autor: r.autor }))),
   };
 }
+
+export const fmtCant = (x, u = '') => (+x || 0).toLocaleString('es-MX', { minimumFractionDigits: 0, maximumFractionDigits: 2 }) + (u ? ' ' + u.toLowerCase() : '');
 
 export const fmtPct = (x, d = 1) => (x === null || x === undefined || isNaN(x) ? '—' : (x * 100).toFixed(d) + '%');
 export const fmtMoney = (x, d = 0) => (x === null || x === undefined ? '—' : '$' + x.toLocaleString('es-MX', { minimumFractionDigits: d, maximumFractionDigits: d }));

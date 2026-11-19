@@ -97,3 +97,29 @@ nav[hidden] { display: none; }
 .dato { display: flex; flex-direction: column; justify-content: flex-end; font-size: 14px; margin-top: 10px; }
 .dato span { font-weight: 600; }
 .dato b { padding: 11px 0; font-weight: 500; }
+/* Captura por partida */
+.linea { display: grid; grid-template-columns: 1fr auto; gap: 6px 8px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--linea); }
+.linea-t { font-size: 14px; min-width: 0; grid-column: 1 / -1; }
+.linea-c input { flex: 1; max-width: 180px; }
+.linea-c { display: flex; align-items: center; gap: 6px; }
+.linea-c input { width: 120px; margin: 0; text-align: right; font-size: 18px; }
+.linea-c span { font-size: 13px; color: var(--gris); min-width: 28px; }
+.quitar-l { background: none; border: 0; color: var(--rojo); font-size: 18px; padding: 8px; cursor: pointer; }
+.buscador { margin-top: 10px; }
+.resultados { display: grid; gap: 6px; margin-top: 6px; max-height: 340px; overflow-y: auto; }
+.res { text-align: left; padding: 10px 12px; border: 1px solid var(--linea); border-radius: 10px; background: var(--fondo); color: var(--txt); font: inherit; font-size: 14px; cursor: pointer; }
+.res:active { background: var(--linea); }
+/* Tablero por grupos */
+.grupos details.grupo { border-bottom: 1px solid var(--linea); padding: 8px 0; }
+.grupos summary { cursor: pointer; list-style: none; }
+.grupos summary::-webkit-details-marker { display: none; }
+.grupos summary .barra { margin: 6px 0 4px; }
+.grupos table { margin-top: 8px; font-size: 13px; }
+/* Portal: partidas de la obra */
+details.manual { margin: 14px 0; }
+details.manual > summary { cursor: pointer; font-weight: 600; color: var(--gris); }
+.tabla-partidas { max-height: 520px; overflow-y: auto; margin-top: 10px; }
+.fila-partida { border-bottom: 1px solid var(--linea); padding: 8px 0; }
+.fila-partida[hidden] { display: none; }
+.fila-partida label.check { align-items: flex-start; }
+.vista { margin-top: 10px; }

@@ -1,12 +1,13 @@
 // Service worker: deja la app completa guardada en el teléfono para abrirla sin señal.
-const VERSION = 'rema-v0.2.0';
+const VERSION = 'rema-v0.3.0';
 const SHELL = [
   './', './index.html', './styles.css', './manifest.webmanifest',
-  './js/app.js', './js/db.js', './js/calc.js', './js/sync.js', './js/pptx.js',
+  './js/app.js', './js/db.js', './js/calc.js', './js/sync.js', './js/pptx.js', './js/ae10.js',
   './icons/icon-192.png', './icons/icon-512.png',
 ];
 const LIBS = [
   'https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js',
+  'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js',
 ];
 
 self.addEventListener('install', e => {
