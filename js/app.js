@@ -58,12 +58,16 @@ function pedirSync() {
     const faltabaObra = !obra;
     const n = await sync.syncNow(settings.obraId);
     const ruta = rutaActual()[0];
-    const cambio = n || antes !== JSON.stringify(ses()?.obras || []);
+    const cambioObras = antes !== JSON.stringify(ses()?.obras || []);
+    const obraAntes = obra?.id;
+    // Si la obra actual se archivó, eliminó o desasignó, se recarga todo aunque haya un formulario abierto.
+    const perdioObra = cambioObras && obraAntes && !(ses()?.obras || []).some(o => o.id === obraAntes);
     // No se repinta una pantalla con un formulario a medio llenar (salvo que estuviera esperando la obra).
-    if (faltabaObra || (cambio && !['capturar', 'admin', 'cuenta'].includes(ruta))) {
+    if (faltabaObra || perdioObra || ((n || cambioObras) && !['capturar', 'admin', 'cuenta'].includes(ruta))) {
       await cargar();
-      if (faltabaObra ? !!obra : true) render();
-    }
+      if (perdioObra) toast('La obra ya no está disponible');
+      if (faltabaObra && !perdioObra ? !!obra : true) render();
+    } else if (cambioObras) await cargar();
   }, 400);
 }
 
@@ -682,10 +686,13 @@ async function admUsuario(id) {
 
 async function admObras() {
   const { obras } = await sync.api('/admin/obras');
+  const tarjeta = o => `<a class="tarjeta item" href="#/admin/obra/${esc(o.id)}">
+    <div class="fila"><b>${esc(o.nombre)}</b><span class="chip ${o.activa ? 'ok' : 'pend'}">${o.activa ? 'Activa' : 'Archivada'}</span></div>
+    <div class="peq">${esc(o.localidad || '')} · ${C.fechaCorta(o.inicio)} al ${C.fechaCorta(o.fin)} · ${(o.conceptos || []).length ? o.conceptos.length + (o.conceptos.length === 1 ? ' partida' : ' partidas') : 'sin catálogo'}</div></a>`;
+  const activas = obras.filter(o => o.activa), archivadas = obras.filter(o => !o.activa);
   $('#adm').innerHTML = `<a class="btn" href="#/admin/obra/nueva">+ Nueva obra</a>
-  ${obras.map(o => `<a class="tarjeta item" href="#/admin/obra/${esc(o.id)}">
-    <div class="fila"><b>${esc(o.nombre)}</b><span class="chip ${o.activa ? 'ok' : 'pend'}">${o.activa ? 'Activa' : 'Inactiva'}</span></div>
-    <div class="peq">${esc(o.localidad || '')} · ${C.fechaCorta(o.inicio)} al ${C.fechaCorta(o.fin)}</div></a>`).join('') || '<p class="peq">Aún no hay obras. Si ya tenías datos en OneDrive, impórtalos en la pestaña OneDrive.</p>'}`;
+  ${activas.map(tarjeta).join('') || '<p class="peq">No hay obras activas. Si ya tenías datos en OneDrive, impórtalos en la pestaña OneDrive.</p>'}
+  ${archivadas.length ? `<details class="manual"><summary>Archivadas (${archivadas.length})</summary>${archivadas.map(tarjeta).join('')}</details>` : ''}`;
 }
 
 const OBRA_VACIA = { nombre: '', localidad: '', cliente: '', concurso: '', fechaConcurso: '', inicio: C.hoy(), fin: C.hoy(), montoTotal: 0, programaMensual: [], grupos: [], conceptos: [], tramos: [], activa: true };
@@ -711,7 +718,7 @@ async function admObra(id) {
       <div class="dos"><label>Concurso No.<input name="concurso" value="${esc(o.concurso)}"></label><label>Fecha concurso<input type="date" name="fechaConcurso" value="${esc(o.fechaConcurso)}"></label></div>
       <div class="dos"><label>Inicio de obra<input type="date" name="inicio" value="${esc(o.inicio)}" required></label><label>Fin de obra<input type="date" name="fin" value="${esc(o.fin)}" required></label></div>
       <label>Monto total del programa ($)<input name="montoTotal" inputmode="decimal" value="${o.montoTotal ?? 0}"></label>
-      <label class="check"><input type="checkbox" name="activa" ${o.activa !== false ? 'checked' : ''}> Obra activa (visible para los usuarios asignados)</label>
+      ${nueva ? '' : `<p>Estado: <span class="chip ${o.activa ? 'ok' : 'pend'}">${o.activa ? 'Activa' : 'Archivada (nadie la ve)'}</span></p>`}
     </fieldset>
     <fieldset><legend>Catálogo y programa de obra</legend>
       <div id="catResumen"></div>
@@ -736,8 +743,35 @@ async function admObra(id) {
     <p id="errObra" class="neg"></p>
     <button class="btn grande">Guardar obra</button>
     <a class="btn sec" href="#/admin/obras">Cancelar</a>
+    ${nueva ? '' : `<fieldset class="zona-peligro"><legend>Archivar o eliminar</legend>
+      ${o.activa
+        ? `<p class="peq">Archivar oculta la obra para todos los usuarios y la quita de sus teléfonos. Sus capturas y fotos se conservan y puedes restaurarla cuando quieras.</p>
+           <button type="button" class="btn sec" id="archivar">Archivar obra</button>`
+        : `<button type="button" class="btn sec" id="restaurar">Restaurar obra</button>
+           <p class="peq">Eliminar borra la obra, sus capturas y el registro de sus fotos. La carpeta en OneDrive se manda a la papelera de OneDrive (se puede recuperar unos 30 días). <b>No se puede deshacer desde la app.</b></p>
+           <button type="button" class="btn peligro" id="eliminar">Eliminar definitivamente…</button>`}
+      <p id="errZona" class="neg"></p>
+    </fieldset>`}
   </form>`;
   const f = $('#fo');
+  $('#archivar')?.addEventListener('click', async () => {
+    if (!confirm(`¿Archivar "${o.nombre}"? Dejará de verse para todos los usuarios.`)) return;
+    try { await sync.api(`/admin/obras/${o.id}/archivar`, { method: 'POST', json: { archivada: true } }); toast('Obra archivada'); pedirSync(); location.hash = '#/admin/obras'; }
+    catch (err) { $('#errZona').textContent = err.message; }
+  });
+  $('#restaurar')?.addEventListener('click', async () => {
+    try { await sync.api(`/admin/obras/${o.id}/archivar`, { method: 'POST', json: { archivada: false } }); toast('Obra restaurada'); pedirSync(); location.hash = '#/admin/obras'; }
+    catch (err) { $('#errZona').textContent = err.message; }
+  });
+  $('#eliminar')?.addEventListener('click', async () => {
+    const escrito = prompt(`Para eliminar definitivamente, escribe el nombre de la obra:\n\n${o.nombre}`);
+    if (escrito === null) return;
+    try {
+      const r = await sync.api('/admin/obras/' + o.id, { method: 'DELETE', json: { confirmacion: escrito } });
+      alert(`Obra eliminada: ${r.capturas} capturas y ${r.fotos} fotos.`);
+      location.hash = '#/admin/obras';
+    } catch (err) { $('#errZona').textContent = err.message; }
+  });
   const slug = s => s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
   if (nueva) f.nombre.oninput = () => { if (!f.id.dataset.tocado) f.id.value = slug(f.nombre.value); };
   if (nueva) f.id.oninput = () => { f.id.dataset.tocado = '1'; };
@@ -871,7 +905,8 @@ async function admObra(id) {
       const n = { ...o };
       for (const k of ['nombre', 'localidad', 'cliente', 'concurso', 'fechaConcurso', 'inicio', 'fin']) n[k] = fd.get(k);
       n.montoTotal = num(fd.get('montoTotal')) || 0;
-      n.activa = !!fd.get('activa');
+      delete n.activa;
+      if (nueva) n._nueva = true;
       n.tramos = lineasTxt(fd.get('tramos')).map((l, i) => {
         const [frente, diametro, lon, zanja, mi, fi] = l.split('|').map(x => x.trim());
         const prev = o.tramos.find(t => t.frente === frente && t.diametro === diametro) || null;

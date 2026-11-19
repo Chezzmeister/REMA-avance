@@ -123,3 +123,4 @@ details.manual > summary { cursor: pointer; font-weight: 600; color: var(--gris)
 .fila-partida[hidden] { display: none; }
 .fila-partida label.check { align-items: flex-start; }
 .vista { margin-top: 10px; }
+.zona-peligro { border-color: var(--rojo); margin-top: 28px; }

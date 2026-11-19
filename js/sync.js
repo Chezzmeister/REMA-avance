@@ -66,6 +66,14 @@ export async function logout() {
   emit({ sesion: null, needsLogin: false, pending: 0 });
 }
 
+async function purgarObra(obraId) {
+  for (const r of await db.all('records')) if (r.obraId === obraId) await db.del('records', r.id);
+  for (const p of await db.all('photos')) if (p.obraId === obraId) await db.del('photos', p.id);
+  for (const o of await db.all('outbox')) if (o.obraId === obraId) await db.del('outbox', o.id);
+  for (const k of ['obra:', 'cursor:', 'draft:']) await db.del('kv', k + obraId);
+  await refreshPending();
+}
+
 async function borrarDatosLocales() {
   for (const s of ['records', 'photos', 'outbox']) await db.clear(s);
   for (const k of await db.keys('kv')) if (k !== 'esquema') await db.del('kv', k);
@@ -163,8 +171,17 @@ async function pull(obraId) {
   const sesion = { ...state.sesion, usuario: me.usuario, obras: me.obras };
   await db.kvSet('sesion', sesion);
   emit({ sesion });
-  if (!obraId || !me.obras.some(o => o.id === obraId)) return 0;
+  // Obras archivadas, eliminadas o ya no asignadas: se borran del teléfono.
+  const vigentes = new Set(me.obras.map(o => o.id));
+  for (const k of await db.keys('kv')) {
+    const m = String(k).match(/^obra:(.+)$/);
+    if (m && !vigentes.has(m[1])) await purgarObra(m[1]);
+  }
+  if (!obraId || !vigentes.has(obraId)) return 0;
   const obra = await api(`/obras/${obraId}`);
+  // Misma clave pero otra obra (se eliminó y se creó una nueva): se descarta lo anterior.
+  const antes = await db.kvGet('obra:' + obraId, null);
+  if (antes?.uid && obra.uid && antes.uid !== obra.uid) await purgarObra(obraId);
   await db.kvSet('obra:' + obraId, obra);
   const pendientes = new Set((await db.all('outbox')).map(o => o.id));
   const desde = await db.kvGet('cursor:' + obraId, 0);
