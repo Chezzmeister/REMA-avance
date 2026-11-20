@@ -1,9 +1,9 @@
 // Service worker: deja la app completa guardada en el teléfono para abrirla sin señal.
-const VERSION = 'rema-v0.3.1';
+const VERSION = 'rema-v0.3.2';
 const SHELL = [
   './', './index.html', './styles.css', './manifest.webmanifest',
   './js/app.js', './js/db.js', './js/calc.js', './js/sync.js', './js/pptx.js', './js/ae10.js',
-  './icons/icon-192.png', './icons/icon-512.png',
+  './icons/icon-192.png', './icons/icon-512.png', './img/logo-rema.png', './img/isotipo.png',
 ];
 const LIBS = [
   'https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js',

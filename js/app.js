@@ -129,6 +129,7 @@ async function render() {
 function vLogin(expirada = false) {
   main().innerHTML = `
   <div class="login">
+    <img class="login-logo" src="img/isotipo.png" alt="" width="96" height="92">
     <h1>${expirada ? 'Vuelve a iniciar sesión' : 'Iniciar sesión'}</h1>
     ${expirada ? '<p class="peq">Lo que capturaste sigue guardado en este teléfono y se subirá al entrar.</p>' : ''}
     <form id="fl" class="form">
@@ -162,6 +163,7 @@ function vLogin(expirada = false) {
 function vCrearAdmin() {
   main().innerHTML = `
   <div class="login">
+    <img class="login-logo" src="img/isotipo.png" alt="" width="96" height="92">
     <h1>Crear administrador</h1>
     <p class="peq">Es la primera vez que se usa el sistema. Crea tu cuenta de administrador; con ella darás de alta a los demás.</p>
     <form id="fa" class="form">

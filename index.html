@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>REMA Avance Semanal</title>
-  <meta name="theme-color" content="#1F3A5F">
+  <meta name="theme-color" content="#232323">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon-192.png">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
@@ -13,12 +13,15 @@
   <meta name="apple-mobile-web-app-title" content="REMA Avance">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <link rel="stylesheet" href="styles.css">
-  <script>window.APP_VERSION = '0.3.1';</script>
+  <script>window.APP_VERSION = '0.3.2';</script>
   <script type="module" src="js/app.js"></script>
 </head>
 <body>
   <header class="top">
-    <div class="fila-top"><span class="marca">REMA · Avance semanal</span><a id="quien" href="#/cuenta" hidden></a></div>
+    <div class="fila-top">
+      <span class="marca"><img src="img/logo-rema.png" alt="REMA · Constructora y Arrendadora" width="155" height="40"><span class="marca-t">Avance semanal</span></span>
+      <a id="quien" href="#/cuenta" hidden></a>
+    </div>
     <div id="obraActual" class="obra-actual"></div>
     <div id="estado" class="estado">Cargando…</div>
   </header>
