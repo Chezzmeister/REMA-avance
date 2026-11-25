@@ -20,8 +20,19 @@ export function aFecha(v) {
   const m = String(v ?? '').trim().match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})$/);
   if (m) return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
   if (/^\d{4}-\d{2}-\d{2}/.test(String(v ?? ''))) return String(v).slice(0, 10);
+  // Encabezado de mes en texto: "Dic-2026", "ENE 2027", "Febrero/27" → primer día del mes.
+  const mm = norm(v).match(/^([A-Z]{3,10})\.?[\s\-\/]*(\d{4}|\d{2})$/);
+  if (mm) {
+    const mes = MESES.findIndex(p => mm[1].startsWith(p));
+    if (mes >= 0 && (mm[1].length === 3 || MESES_L[mes].startsWith(mm[1]))) {
+      const anio = mm[2].length === 2 ? 2000 + +mm[2] : +mm[2];
+      return `${anio}-${String(mes + 1).padStart(2, '0')}-01`;
+    }
+  }
   return null;
 }
+const MESES = ['ENE', 'FEB', 'MAR', 'ABR', 'MAY', 'JUN', 'JUL', 'AGO', 'SEP', 'OCT', 'NOV', 'DIC'];
+const MESES_L = ['ENERO', 'FEBRERO', 'MARZO', 'ABRIL', 'MAYO', 'JUNIO', 'JULIO', 'AGOSTO', 'SEPTIEMBRE', 'OCTUBRE', 'NOVIEMBRE', 'DICIEMBRE'];
 
 const COLUMNAS = {
   clave: t => /^(CODIGO|CLAVE|CVE\.?)$/.test(t),
@@ -42,10 +53,15 @@ function buscarEncabezado(rows) {
       const t = norm(c);
       for (const [k, f] of Object.entries(COLUMNAS)) if (cols[k] === undefined && t && f(t)) cols[k] = j;
     });
-    if (cols.descripcion !== undefined && cols.importe !== undefined && Object.keys(cols).length >= 4) {
-      // Columnas de periodo: fechas en el encabezado a la derecha del importe.
+    const sinImporte = cols.importe === undefined && cols.cantidad !== undefined && cols.precio !== undefined;
+    if (cols.descripcion !== undefined && (cols.importe !== undefined || sinImporte) && Object.keys(cols).length >= 4) {
+      // Columnas de periodo: fechas (o meses en texto) en el encabezado, a la derecha de las columnas fijas.
+      const fijas = Math.max(...['cantidad', 'precio', 'inicio', 'fin'].map(k => cols[k] ?? -1));
       const periodos = [];
-      r.forEach((c, j) => { if (j > cols.importe && aFecha(c) && norm(c) !== 'TOTAL') periodos.push({ col: j, desde: aFecha(c) }); });
+      r.forEach((c, j) => { if (j > fijas && j !== cols.importe && aFecha(c)) periodos.push({ col: j, desde: aFecha(c) }); });
+      // Un "Total" a la derecha de los meses es la suma del renglón (cantidad o importe según el
+      // renglón), no el importe de la partida: entonces el importe es cantidad × precio.
+      if (cols.importe !== undefined && periodos.length && cols.importe > periodos[0].col && cols.cantidad !== undefined && cols.precio !== undefined) delete cols.importe;
       return { fila: i, cols, periodos };
     }
   }
@@ -83,7 +99,9 @@ function leerDatosGenerales(rows, hasta) {
   return g;
 }
 
-const RUIDO = /^(TOTAL|ACUMULADO|PORCENTAJE|MONTO ESTA HOJA|ACUMULADO ANTERIOR|APODERADO|BARRA=|SUBTOTAL|IVA|IMPORTE CON LETRA|\(\*)/;
+const RUIDO = /^(?:(?:TOTAL|ACUMULADO|PORCENTAJE|MONTO ESTA HOJA|ACUMULADO ANTERIOR|APODERADO|SUBTOTAL|IVA|IMPORTE CON LETRA)(?![A-Z])|BARRA=|\(\*)/;
+// Totales de toda la obra: no cierran ningún grupo.
+const TOTAL_GENERAL = /^TOTAL (DEL? )?(PRESUPUESTO|GENERAL|OBRA|LA OBRA|CATALOGO)\b/;
 
 // Identificador estable: la misma partida (clave + ubicación) conserva su id al volver a importar.
 function hash(s) { let h = 2166136261; for (const ch of s) { h ^= ch.codePointAt(0); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36); }
@@ -100,6 +118,29 @@ export function parsearHoja(rows) {
   let hayTotales = false;
   let ultimo = null; // última partida, para leer sus renglones de periodo
   const idsUsados = new Set();
+  const texto = (r, j) => (j === undefined ? '' : String((r || [])[j] ?? ''));
+  const conNumeros = r => periodos.some(p => esNum((r || [])[p.col]));
+
+  function continuarDescripcion(k, d, i) {
+    if (k.descripcion.length < 1200) k.descripcion = (k.descripcion + ' ' + d.replace(/\s+/g, ' ').trim()).trim();
+    k._ultFila = i;
+  }
+  function esTitulo(i) {
+    const k = ultimo;
+    const terminada = /\.\s*$/.test(k.descripcion);
+    let hueco = false;
+    for (let x = i - 1; x > (k._ultFila ?? i); x--) if (vacio(texto(rows[x], cols.descripcion))) { hueco = true; break; }
+    if (!terminada && !hueco) return false;
+    for (let x = i, n = 0; x < rows.length && n < 8; x++) {
+      const r = rows[x] || [];
+      if (!vacio(texto(r, cols.clave)) || !vacio(texto(r, cols.unidad))) return true;
+      const d = texto(r, cols.descripcion);
+      if (vacio(d)) continue;
+      if (/\.\s*$/.test(d) || conNumeros(r) || /^TOTAL /.test(norm(d))) return false;
+      n++;
+    }
+    return false;
+  }
 
   for (let i = enc.fila + 1; i < rows.length; i++) {
     const r = rows[i] || [];
@@ -112,6 +153,7 @@ export function parsearHoja(rows) {
     // Renglones de total: cierran grupos.
     const mTotal = descN.match(/^TOTAL (.+)$/) || (cols.clave !== undefined && norm(celdaTexto(cols.clave)).match(/^TOTAL (.+)$/));
     if (mTotal) {
+      if (TOTAL_GENERAL.test(mTotal[0])) { ultimo = null; continue; }
       hayTotales = true;
       const nombre = mTotal[1];
       const k = pila.map(g => norm(g)).findLastIndex(g => g.startsWith(nombre) || nombre.startsWith(g));
@@ -121,8 +163,9 @@ export function parsearHoja(rows) {
     }
     if (RUIDO.test(descN) || RUIDO.test(norm(clave))) continue;
 
-    const importe = aNum(r[cols.importe]);
     const unidad = celdaTexto(cols.unidad).trim();
+    const importe = cols.importe !== undefined ? aNum(r[cols.importe])
+      : (aNum(r[cols.cantidad]) !== null && aNum(r[cols.precio]) !== null && !vacio(clave + unidad) ? aNum(r[cols.cantidad]) * aNum(r[cols.precio]) : null);
     const esPartida = !vacio(desc) && importe !== null && importe > 0 && (unidad || aNum(r[cols.cantidad]));
     // Renglones de página ("Monto esta hoja", "Acumulado", "Barra=…") en otras columnas.
     if (!esPartida && textos.some(t => RUIDO.test(t)) && !(ultimo && vacio(desc) && vacio(clave))) continue;
@@ -144,15 +187,26 @@ export function parsearHoja(rows) {
       if (ini && fin) { k.inicio = ini; k.fin = fin; }
       // Valores de periodo en el mismo renglón (pueden ser %, cantidades o importes).
       k._filasPeriodo = periodos.length ? [periodos.map(p => aNum(r[p.col]) ?? 0)] : [];
+      k._ultFila = i;
       conceptos.push(k);
       ultimo = k;
       continue;
     }
 
     // Renglón solo con números en columnas de periodo: pertenece a la última partida.
-    if (ultimo && vacio(desc) && vacio(clave) && periodos.length && periodos.some(p => esNum(r[p.col]))) {
+    // (En algunos programas trae además la continuación de la descripción.)
+    if (ultimo && vacio(clave) && !unidad && periodos.length && periodos.some(p => esNum(r[p.col]))) {
       ultimo._filasPeriodo.push(periodos.map(p => aNum(r[p.col]) ?? 0));
+      if (!vacio(desc)) continuarDescripcion(ultimo, desc, i);
       continue;
+    }
+
+    // Descripción en varios renglones: después de una partida, el texto sigue siendo suyo,
+    // salvo que sea un título de grupo (va justo antes de una partida, la descripción anterior
+    // ya había terminado en punto y ningún renglón del título termina en punto).
+    if (ultimo && !vacio(desc) && vacio(clave) && !unidad && !(importe > 0) && !/^\s|^[a-zà-ü]/.test(desc)) {
+      if (!esTitulo(i)) { continuarDescripcion(ultimo, desc, i); continue; }
+      ultimo = null;
     }
 
     // Título de grupo. Se descartan restos de descripciones cortadas (empiezan con espacio o minúscula).
@@ -160,7 +214,7 @@ export function parsearHoja(rows) {
       if (/^\s/.test(desc) || /^[a-zà-ü]/.test(desc.trim())) continue;
       const nombre = desc.replace(/\s+/g, ' ').trim();
       // Sin renglones TOTAL no se puede saber la profundidad: se tratan como hermanos.
-      if (!hayTotales && pila.length && !rows.slice(i).some(x => (x || []).some(c => /^TOTAL /.test(norm(c))))) pila.length = 0;
+      if (!hayTotales && pila.length && !rows.slice(i).some(x => (x || []).some(c => /^TOTAL /.test(norm(c)) && !TOTAL_GENERAL.test(norm(c))))) pila.length = 0;
       pila.push(nombre);
       ultimo = null;
     }
@@ -170,6 +224,7 @@ export function parsearHoja(rows) {
   for (const k of conceptos) {
     const filas = k._filasPeriodo;
     delete k._filasPeriodo;
+    delete k._ultFila;
     if (!filas.length) continue;
     const suma = f => f.reduce((s, v) => s + v, 0);
     const cerca = (a, b) => Math.abs(a - b) <= Math.max(0.05, Math.abs(b) * 0.002);
