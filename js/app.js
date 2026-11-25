@@ -857,47 +857,98 @@ async function admObra(id) {
   };
   pintarCat();
 
+  // ---- Importación del Excel: vista previa con revisión y columnas elegibles a mano ----
+  let ae = null;
+  const ORDEN_CAMPOS = ['clave', 'descripcion', 'unidad', 'cantidad', 'precio', 'importe', 'inicio', 'fin'];
+  const MARCA = { ok: '✓', error: '✗', aviso: '!' };
+
+  // Hoja, renglón de encabezados y columna de cada dato, para corregir la lectura a mano.
+  const pintarColumnas = (cont, st, alLeer) => {
+    const rows = ae.filasDe(st.hoja);
+    const cands = ae.candidatosEncabezado(rows);
+    if (st.fila !== null && !cands.some(c => c.fila === st.fila)) cands.unshift({ fila: st.fila, texto: '(renglón actual)' });
+    const celdas = st.fila === null ? [] : (rows[st.fila] || []).map((c, j) => ({ j, t: String(c ?? '').trim() })).filter(x => x.t);
+    cont.innerHTML = `
+      <p class="peq">Si algún dato se leyó mal, indica en qué renglón están los encabezados y qué columna trae cada dato. Se recordará para los archivos con este mismo formato.</p>
+      ${st.hojas.length > 1 ? `<label>Hoja<select class="colHoja">${st.hojas.map(h => `<option ${h === st.hoja ? 'selected' : ''}>${esc(h)}</option>`).join('')}</select></label>` : ''}
+      <label>Renglón de encabezados<select class="colFila"><option value="">— Elige —</option>${cands.map(c => `<option value="${c.fila}" ${c.fila === st.fila ? 'selected' : ''}>${c.fila + 1}: ${esc(c.texto)}</option>`).join('')}</select></label>
+      ${st.fila === null ? '' : `<div class="dos">${ORDEN_CAMPOS.map(k => `<label>${ae.CAMPOS[k]}<select data-campo="${k}"><option value="-1">— No tiene —</option>${celdas.map(x => `<option value="${x.j}" ${st.cols[k] === x.j ? 'selected' : ''}>${ae.letraCol(x.j)} · ${esc(x.t.slice(0, 30))}</option>`).join('')}</select></label>`).join('')}</div>
+      <p class="neg colErr"></p>
+      <button type="button" class="btn sec colLeer">Volver a leer con estas columnas</button>`}`;
+    cont.querySelector('.colHoja')?.addEventListener('change', e => pintarColumnas(cont, { ...st, hoja: e.target.value, fila: null, cols: {} }, alLeer));
+    cont.querySelector('.colFila').onchange = e => {
+      const fila = e.target.value === '' ? null : +e.target.value;
+      pintarColumnas(cont, { ...st, fila, cols: fila === null ? {} : ae.columnasSugeridas(rows, fila) }, alLeer);
+    };
+    cont.querySelector('.colLeer')?.addEventListener('click', () => {
+      const cols = {};
+      cont.querySelectorAll('select[data-campo]').forEach(s => { cols[s.dataset.campo] = +s.value; });
+      try { alLeer(ae.releer(st.hoja, st.fila, cols)); }
+      catch (err) { cont.querySelector('.colErr').textContent = err.message; }
+    });
+  };
+
+  const mostrarVista = (file, r) => {
+    const nivel = r.nivelSugerido;
+    const grupos = [...new Set(r.conceptos.map(k => C.grupoDe(k, nivel)))];
+    const g = r.generales;
+    const conservados = cat.conceptos.length ? r.conceptos.filter(k => cat.conceptos.some(x => x.id === k.id)).length : 0;
+    const errores = r.revision.filter(x => x.nivel === 'error').length;
+    $('#vistaPrevia').innerHTML = `<div class="tarjeta vista">
+      <h3>${esc(file.name)}</h3>
+      <p><b>${r.conceptos.length} partidas</b> · total ${C.fmtMoney(r.total, 2)}${r.periodos.length ? ` · programa en ${r.periodos.length} meses` : ''}</p>
+      ${g.inicio ? `<p class="peq">Obra del ${C.fechaCorta(g.inicio)} al ${C.fechaCorta(g.fin)}${g.concurso ? ' · Concurso ' + esc(g.concurso) : ''}</p>` : ''}
+      <h3>Revisión contra el archivo</h3>
+      <ul class="revision">${r.revision.map(x => `<li class="rev-${x.nivel}"><b>${MARCA[x.nivel]}</b> ${esc(x.texto)}</li>`).join('')}</ul>
+      ${r.recordado ? '<p class="peq">Se usaron las columnas que elegiste antes para este mismo formato.</p>' : ''}
+      <p class="peq">${grupos.length} grupos: ${esc(grupos.slice(0, 6).join(' · '))}${grupos.length > 6 ? '…' : ''}</p>
+      ${cat.conceptos.length ? `<p class="peq">${conservados} de ${r.conceptos.length} partidas coinciden con el catálogo actual; su avance capturado se conserva.</p>` : ''}
+      <details class="manual" ${errores ? 'open' : ''}><summary>Columnas que se usaron${r.manual || r.recordado ? ' (elegidas a mano)' : ''}</summary><div id="colsXls"></div></details>
+      ${errores ? '<p class="neg">La lectura no cuadra con los totales del archivo. Corrige las columnas arriba; usa el archivo así solo si estás seguro de que está bien.</p>' : ''}
+      <button type="button" class="btn ${errores ? 'peligro' : ''}" id="usarXls">${errores ? 'Usar de todos modos' : 'Usar este archivo'}</button>
+      <button type="button" class="btn sec" id="cancelarXls">Cancelar</button>
+    </div>`;
+    pintarColumnas($('#colsXls'), { hoja: r.hoja, hojas: r.hojas, fila: r.encabezado.fila, cols: r.encabezado.cols }, nuevo => mostrarVista(file, nuevo));
+    $('#cancelarXls').onclick = () => { $('#vistaPrevia').innerHTML = ''; };
+    $('#usarXls').onclick = () => {
+      if (errores && !confirm('La lectura no coincide con los totales del archivo. ¿Usarla de todos modos?')) return;
+      if (r.manual) ae.recordarColumnas(ae.filasDe(r.hoja), r.encabezado.fila, r.encabezado.cols);
+      usarLectura(r);
+    };
+  };
+
   $('#xls').onchange = async e => {
     const file = e.target.files[0]; e.target.value = '';
     if (!file) return;
     $('#vistaPrevia').innerHTML = '<p class="peq">Leyendo el archivo…</p>';
     try {
-      const { leerArchivo } = await import('./ae10.js');
-      const r = await leerArchivo(file);
-      const nivel = r.nivelSugerido;
-      const grupos = [...new Set(r.conceptos.map(k => C.grupoDe(k, nivel)))];
-      const g = r.generales;
-      const conservados = cat.conceptos.length ? r.conceptos.filter(k => cat.conceptos.some(x => x.id === k.id)).length : 0;
-      $('#vistaPrevia').innerHTML = `<div class="tarjeta vista">
-        <h3>${esc(file.name)}</h3>
-        <p><b>${r.conceptos.length} partidas</b> · total ${C.fmtMoney(r.total, 2)}${r.periodos.length ? ` · programa en ${r.periodos.length} periodos` : ''}</p>
-        ${g.inicio ? `<p class="peq">Obra del ${C.fechaCorta(g.inicio)} al ${C.fechaCorta(g.fin)}${g.concurso ? ' · Concurso ' + esc(g.concurso) : ''}</p>` : ''}
-        ${r.avisos.map(a => `<p class="nota">${esc(a)}</p>`).join('')}
-        <p class="peq">${grupos.length} grupos: ${esc(grupos.slice(0, 6).join(' · '))}${grupos.length > 6 ? '…' : ''}</p>
-        ${cat.conceptos.length ? `<p class="peq">${conservados} de ${r.conceptos.length} partidas coinciden con el catálogo actual; su avance capturado se conserva.</p>` : ''}
-        <button type="button" class="btn" id="usarXls">Usar este archivo</button>
-        <button type="button" class="btn sec" id="cancelarXls">Cancelar</button>
-      </div>`;
-      $('#cancelarXls').onclick = () => { $('#vistaPrevia').innerHTML = ''; };
-      $('#usarXls').onclick = () => {
-        leerCat();
-        const ids = new Set(r.conceptos.map(k => k.id));
-        cat.conceptos = r.conceptos;
-        cat.nivelGrupo = nivel;
-        cat.destacados = cat.destacados.filter(x => ids.has(x));
-        for (const m of ['etiquetas', 'inicial']) cat[m] = Object.fromEntries(Object.entries(cat[m]).filter(([x]) => ids.has(x)));
-        for (const [k, v] of Object.entries({ nombre: g.nombre, localidad: g.localidad, cliente: g.cliente, concurso: g.concurso, fechaConcurso: g.fechaConcurso })) if (v && !f[k].value) f[k].value = v;
-        if (g.inicio) f.inicio.value = g.inicio;
-        if (g.fin) f.fin.value = g.fin;
-        f.montoTotal.value = r.total;
-        $('#vistaPrevia').innerHTML = '<p class="pos">Catálogo cargado. Revisa las partidas destacadas y presiona "Guardar obra".</p>';
-        f.querySelector('details.manual').open = false;
-        pintarCat();
-      };
+      ae = ae || await import('./ae10.js');
+      mostrarVista(file, await ae.leerArchivo(file));
     } catch (err) {
-      $('#vistaPrevia').innerHTML = `<p class="neg">${esc(err.message)}</p>`;
+      if (!err.sinEncabezado || !err.hojas) { $('#vistaPrevia').innerHTML = `<p class="neg">${esc(err.message)}</p>`; return; }
+      $('#vistaPrevia').innerHTML = `<div class="tarjeta vista"><h3>${esc(file.name)}</h3><p class="neg">${esc(err.message)}</p><div id="colsXls"></div>
+        <button type="button" class="btn sec" id="cancelarXls">Cancelar</button></div>`;
+      pintarColumnas($('#colsXls'), { hoja: err.hoja, hojas: err.hojas, fila: null, cols: {} }, nuevo => mostrarVista(file, nuevo));
+      $('#cancelarXls').onclick = () => { $('#vistaPrevia').innerHTML = ''; };
     }
   };
+
+  function usarLectura(r) {
+    const g = r.generales;
+    leerCat();
+    const ids = new Set(r.conceptos.map(k => k.id));
+    cat.conceptos = r.conceptos;
+    cat.nivelGrupo = r.nivelSugerido;
+    cat.destacados = cat.destacados.filter(x => ids.has(x));
+    for (const m of ['etiquetas', 'inicial']) cat[m] = Object.fromEntries(Object.entries(cat[m]).filter(([x]) => ids.has(x)));
+    for (const [k, v] of Object.entries({ nombre: g.nombre, localidad: g.localidad, cliente: g.cliente, concurso: g.concurso, fechaConcurso: g.fechaConcurso })) if (v && !f[k].value) f[k].value = v;
+    if (g.inicio) f.inicio.value = g.inicio;
+    if (g.fin) f.fin.value = g.fin;
+    f.montoTotal.value = r.total;
+    $('#vistaPrevia').innerHTML = '<p class="pos">Catálogo cargado. Revisa las partidas destacadas y presiona "Guardar obra".</p>';
+    f.querySelector('details.manual').open = false;
+    pintarCat();
+  }
 
   f.onsubmit = async e => {
     e.preventDefault();

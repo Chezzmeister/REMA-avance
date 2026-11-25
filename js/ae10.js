@@ -34,39 +34,73 @@ export function aFecha(v) {
 const MESES = ['ENE', 'FEB', 'MAR', 'ABR', 'MAY', 'JUN', 'JUL', 'AGO', 'SEP', 'OCT', 'NOV', 'DIC'];
 const MESES_L = ['ENERO', 'FEBRERO', 'MARZO', 'ABRIL', 'MAYO', 'JUNIO', 'JULIO', 'AGOSTO', 'SEPTIEMBRE', 'OCTUBRE', 'NOVIEMBRE', 'DICIEMBRE'];
 
-const COLUMNAS = {
-  clave: t => /^(CODIGO|CLAVE|CVE\.?)$/.test(t),
-  descripcion: t => /^(DESCRIPCION|CONCEPTO|DESCRIPCION DEL CONCEPTO)/.test(t),
-  unidad: t => /^(UNIDAD|UNID\.?|UND\.?|U\.?)$/.test(t),
-  cantidad: t => /^(CANTIDAD|VOLUMEN|CANT\.?)$/.test(t),
-  precio: t => /^(PRECIO( UNITARIO)?|P\.? ?U\.?|P\. UNITARIO|PRECIO U\.?)$/.test(t),
-  importe: t => /^(IMPORTE|IMPORTE TOTAL|TOTAL)$/.test(t),
-  inicio: t => /^(INICIO|FECHA INICIO|F\. INICIO)$/.test(t),
-  fin: t => /^(FIN|TERMINO|FECHA FIN|F\. FIN|FECHA TERMINO)$/.test(t),
+// Nombres de columna que se reconocen solos (el texto ya viene sin acentos, en mayúsculas y sin
+// puntos sobrantes; "M.N.", "SIN IVA" y "($)" se ignoran).
+export const CAMPOS = {
+  clave: 'Clave', descripcion: 'Descripción', unidad: 'Unidad', cantidad: 'Cantidad',
+  precio: 'Precio unitario', importe: 'Importe', inicio: 'Fecha de inicio', fin: 'Fecha de término',
 };
+const COLUMNAS = {
+  clave: t => /^(CODIGO|CLAVE|CVE|CLAVE DEL CONCEPTO)$/.test(t),
+  descripcion: t => /^(DESCRIPCION|CONCEPTO)/.test(t),
+  unidad: t => /^(UNIDAD|UNID|UND|U|UM|U DE M|UNIDAD DE MEDIDA|U MEDIDA)$/.test(t),
+  cantidad: t => /^(CANTIDAD|VOLUMEN|CANT|CANTIDAD TOTAL|CANT TOTAL|VOL|VOLUMEN TOTAL)$/.test(t),
+  precio: t => /^(PRECIO|PRECIO UNITARIO|PU|P U|P UNITARIO|PRECIO U|PRECIO UNIT)$/.test(t),
+  importe: t => /^(IMPORTE|IMPORTE TOTAL|TOTAL|MONTO|MONTO TOTAL)$/.test(t),
+  inicio: t => /^(INICIO|FECHA INICIO|FECHA DE INICIO|F INICIO|INICIA)$/.test(t),
+  fin: t => /^(FIN|TERMINO|FECHA FIN|FECHA DE FIN|F FIN|FECHA TERMINO|FECHA DE TERMINO|TERMINA|FINAL)$/.test(t),
+};
+const limpiarEnc = c => norm(c).replace(/\(\$\)|\$|\bM\.? ?N\.?$|\bSIN IVA\b/g, '').replace(/[.:]/g, ' ').replace(/\s+/g, ' ').trim();
+export const letraCol = j => { let s = ''; for (j++; j > 0; j = Math.floor((j - 1) / 26)) s = String.fromCharCode(65 + (j - 1) % 26) + s; return s; };
+
+// Lee el renglón i como encabezado. cols: columnas elegidas a mano ({campo: índice}, -1 = no tiene).
+function leerEncabezado(rows, i, manual) {
+  const r = rows[i] || [];
+  const cols = {};
+  r.forEach((c, j) => {
+    const t = limpiarEnc(c);
+    for (const [k, f] of Object.entries(COLUMNAS)) if (cols[k] === undefined && t && f(t)) cols[k] = j;
+  });
+  if (manual) for (const [k, j] of Object.entries(manual)) { if (j === null || j === undefined || j < 0) delete cols[k]; else cols[k] = +j; }
+  const sinImporte = cols.importe === undefined && cols.cantidad !== undefined && cols.precio !== undefined;
+  if (!manual && !(cols.descripcion !== undefined && (cols.importe !== undefined || sinImporte) && Object.keys(cols).length >= 4)) return null;
+  // Columnas de periodo: fechas (o meses en texto) en el encabezado, a la derecha de las columnas fijas.
+  const fijas = Math.max(...['cantidad', 'precio', 'inicio', 'fin'].map(k => cols[k] ?? -1));
+  const periodos = [];
+  r.forEach((c, j) => { if (j > fijas && !Object.values(cols).includes(j) && aFecha(c)) periodos.push({ col: j, desde: aFecha(c) }); });
+  // Un "Total" a la derecha de los meses es la suma del renglón (cantidad o importe según el
+  // renglón), no el importe de la partida: entonces el importe es cantidad × precio.
+  let colTotal = r.findIndex((c, j) => periodos.length && j > periodos[periodos.length - 1].col && /^TOTAL/.test(limpiarEnc(c)));
+  if (!(manual && 'importe' in manual) && cols.importe !== undefined && periodos.length && cols.importe > periodos[0].col && cols.cantidad !== undefined && cols.precio !== undefined) {
+    colTotal = cols.importe; delete cols.importe;
+  }
+  return { fila: i, cols, periodos, colTotal: colTotal >= 0 ? colTotal : undefined, manual: !!manual };
+}
 
 function buscarEncabezado(rows) {
-  for (let i = 0; i < Math.min(rows.length, 80); i++) {
-    const r = rows[i] || [];
-    const cols = {};
-    r.forEach((c, j) => {
-      const t = norm(c);
-      for (const [k, f] of Object.entries(COLUMNAS)) if (cols[k] === undefined && t && f(t)) cols[k] = j;
-    });
-    const sinImporte = cols.importe === undefined && cols.cantidad !== undefined && cols.precio !== undefined;
-    if (cols.descripcion !== undefined && (cols.importe !== undefined || sinImporte) && Object.keys(cols).length >= 4) {
-      // Columnas de periodo: fechas (o meses en texto) en el encabezado, a la derecha de las columnas fijas.
-      const fijas = Math.max(...['cantidad', 'precio', 'inicio', 'fin'].map(k => cols[k] ?? -1));
-      const periodos = [];
-      r.forEach((c, j) => { if (j > fijas && j !== cols.importe && aFecha(c)) periodos.push({ col: j, desde: aFecha(c) }); });
-      // Un "Total" a la derecha de los meses es la suma del renglón (cantidad o importe según el
-      // renglón), no el importe de la partida: entonces el importe es cantidad × precio.
-      if (cols.importe !== undefined && periodos.length && cols.importe > periodos[0].col && cols.cantidad !== undefined && cols.precio !== undefined) delete cols.importe;
-      return { fila: i, cols, periodos };
-    }
-  }
+  for (let i = 0; i < Math.min(rows.length, 80); i++) { const e = leerEncabezado(rows, i); if (e) return e; }
   return null;
 }
+
+// Renglones que podrían ser el encabezado, para elegirlo a mano.
+export function candidatosEncabezado(rows) {
+  const out = [];
+  for (let i = 0; i < Math.min(rows.length, 80); i++) {
+    const textos = (rows[i] || []).filter(c => typeof c === 'string' && c.trim());
+    const numeros = (rows[i] || []).filter(c => typeof c === 'number').length;
+    if (textos.length >= 3 && numeros * 2 <= textos.length) out.push({ fila: i, texto: textos.map(c => c.trim()).join(' · ').slice(0, 90) });
+  }
+  return out;
+}
+// Columnas que se reconocen solas en el renglón elegido como encabezado.
+export function columnasSugeridas(rows, fila) {
+  const e = leerEncabezado(rows, fila) || leerEncabezado(rows, fila, {});
+  const cols = { ...e.cols };
+  // Un "Total" a la derecha de los meses nunca es el importe de la partida.
+  if (cols.importe !== undefined && e.periodos.length && cols.importe > e.periodos[0].col) delete cols.importe;
+  return cols;
+}
+export const firmaEncabezado = r => (r || []).map(limpiarEnc).filter(Boolean).join('|').slice(0, 300);
 
 // Datos generales que vienen arriba del encabezado (Cliente:, Obra:, Concurso, Inicio obra:, …).
 function leerDatosGenerales(rows, hasta) {
@@ -107,10 +141,13 @@ const TOTAL_GENERAL = /^TOTAL (DEL? )?(PRESUPUESTO|GENERAL|OBRA|LA OBRA|CATALOGO
 function hash(s) { let h = 2166136261; for (const ch of s) { h ^= ch.codePointAt(0); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36); }
 const slug = s => norm(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 24);
 
-export function parsearHoja(rows) {
-  const enc = buscarEncabezado(rows);
-  if (!enc) throw new Error('No encontré el encabezado de partidas (columnas como Código, Descripción, Unidad, Cantidad, Precio, Importe).');
+// opciones.fila / opciones.cols: encabezado y columnas elegidos a mano.
+export function parsearHoja(rows, opciones = {}) {
+  const enc = opciones.fila !== undefined && opciones.fila !== null ? leerEncabezado(rows, +opciones.fila, opciones.cols || {}) : buscarEncabezado(rows);
+  if (!enc) throw Object.assign(new Error('No encontré el renglón de encabezados (columnas como Clave, Descripción, Unidad, Cantidad, Precio, Importe). Elige abajo cuál es.'), { sinEncabezado: true });
   const { cols, periodos } = enc;
+  if (cols.descripcion === undefined) throw Object.assign(new Error('Falta indicar qué columna trae la descripción.'), { sinEncabezado: true });
+  if (cols.importe === undefined && (cols.cantidad === undefined || cols.precio === undefined)) throw Object.assign(new Error('Falta indicar la columna de importe, o las de cantidad y precio unitario.'), { sinEncabezado: true });
   const generales = leerDatosGenerales(rows, enc.fila);
   const avisos = [];
   const conceptos = [];
@@ -240,13 +277,80 @@ export function parsearHoja(rows) {
 
   const total = Math.round(conceptos.reduce((s, k) => s + k.importe, 0) * 100) / 100;
   const sinFechas = conceptos.filter(k => !k.inicio).length;
-  if (!conceptos.length) throw new Error('No encontré partidas con importe en el archivo.');
+  if (!conceptos.length) throw Object.assign(new Error('No encontré partidas con importe en el archivo. Revisa abajo qué columnas se usaron.'), { sinEncabezado: true });
   if (sinFechas === conceptos.length) avisos.push('El archivo no trae fechas de inicio y fin por partida: el programa a la fecha no se podrá calcular por partida. Usa el programa de obra (AE10).');
   else if (sinFechas) avisos.push(`${sinFechas} partidas no traen fechas de inicio y fin.`);
-  const malas = conceptos.filter(k => k.cantidad && k.precio && Math.abs(k.cantidad * k.precio - k.importe) > Math.max(1, k.importe * 0.005));
-  if (malas.length) avisos.push(`${malas.length} partidas tienen cantidad × precio distinto al importe (se usa el importe): ${malas.slice(0, 3).map(k => k.clave).join(', ')}…`);
   const nivelSugerido = conceptos.every(k => k.ruta.length > 1 && k.ruta[0] === conceptos[0].ruta[0]) ? 2 : 1;
-  return { generales, conceptos, total, avisos, nivelSugerido, periodos: periodos.map(p => p.desde) };
+  const revision = revisar({ rows, enc, conceptos, total, avisos });
+  return {
+    generales, conceptos, total, avisos, revision, nivelSugerido, periodos: periodos.map(p => p.desde),
+    encabezado: { fila: enc.fila, cols: { ...cols }, manual: enc.manual, periodos: periodos.length },
+  };
+}
+
+// ---------- Revisión: se compara lo leído contra los totales que trae el propio archivo ----------
+const TOTAL_ARCHIVO = /^(TOTAL (DEL? )?(PRESUPUESTO|GENERAL|OBRA|LA OBRA|CATALOGO)|IMPORTE TOTAL( DE LA (OBRA|PROPUESTA))?|MONTO TOTAL|SUMA TOTAL|GRAN TOTAL)/;
+
+function revisar({ rows, enc, conceptos, total, avisos }) {
+  const { cols, periodos, colTotal } = enc;
+  const rev = [];
+  const fmt = n => '$' + n.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const igual = (a, b) => Math.abs(a - b) <= Math.max(1, Math.abs(b) * 0.001);
+
+  // 1. Total de la obra contra el renglón de total del archivo.
+  const candidatos = [];
+  for (let i = enc.fila + 1; i < rows.length; i++) {
+    const r = rows[i] || [];
+    const etiqueta = r.map(c => (typeof c === 'string' ? norm(c).replace(/:$/, '') : '')).find(t => TOTAL_ARCHIVO.test(t));
+    if (!etiqueta) continue;
+    const meses = periodos.map(p => aNum(r[p.col]));
+    let valor = [cols.importe, colTotal].map(j => (j === undefined ? null : aNum(r[j]))).find(v => v !== null && v > 0);
+    if (valor === undefined && meses.some(v => v)) valor = meses.reduce((s, v) => s + (v || 0), 0);
+    if (valor === undefined) { const nums = r.map(aNum).filter(v => v !== null && v > 0); valor = nums[nums.length - 1]; }
+    if (valor) candidatos.push({ etiqueta, valor, meses, conIva: /\bIVA\b/.test(etiqueta) && !/SIN IVA/.test(etiqueta) });
+  }
+  const coincide = candidatos.find(c => igual(c.valor, total));
+  const conIva = !coincide && candidatos.find(c => igual(c.valor, total * 1.16));
+  if (coincide || conIva) rev.push({ nivel: 'ok', texto: `El total leído (${fmt(total)}) coincide con "${(coincide || conIva).etiqueta.toLowerCase()}" del archivo${conIva ? ' (antes de IVA)' : ''}.` });
+  else if (candidatos.length) {
+    const c = candidatos.find(x => !x.conIva) || candidatos[0];
+    rev.push({ nivel: 'error', texto: `El total leído (${fmt(total)}) no coincide con "${c.etiqueta.toLowerCase()}" del archivo (${fmt(c.valor)}). Probablemente alguna columna se leyó mal: revisa las columnas abajo.` });
+  } else rev.push({ nivel: 'aviso', texto: `No encontré en el archivo un renglón de total para comparar. Revisa que el total leído (${fmt(total)}) sea el de la obra.` });
+
+  // 2. Cada mes contra los totales por mes del archivo.
+  if (periodos.length) {
+    const porMes = periodos.map(p => conceptos.reduce((s, k) => s + (k.periodos?.[p.desde.slice(0, 7)]?.importe || 0), 0));
+    const ref = (coincide || conIva) && (coincide || conIva).meses.some(v => v) ? (coincide || conIva) : candidatos.find(c => c.meses.some(v => v) && igual(c.meses.reduce((s, v) => s + (v || 0), 0), total));
+    if (ref) {
+      const malos = periodos.filter((p, j) => !igual(porMes[j], ref.meses[j] || 0));
+      if (malos.length) rev.push({ nivel: 'error', texto: `${malos.length} de ${periodos.length} meses no coinciden con los totales por mes del archivo (${malos.slice(0, 3).map(p => p.desde.slice(0, 7)).join(', ')}${malos.length > 3 ? '…' : ''}).` });
+      else rev.push({ nivel: 'ok', texto: `Los ${periodos.length} meses del programa coinciden con los totales por mes del archivo.` });
+    }
+    const sinReparto = conceptos.filter(k => !k.periodos);
+    if (sinReparto.length) rev.push({ nivel: sinReparto.length > conceptos.length / 3 ? 'error' : 'aviso', texto: `${sinReparto.length} partidas no tienen un reparto por mes que sume su importe: ${sinReparto.slice(0, 3).map(k => k.clave || k.descripcion.slice(0, 20)).join(', ')}${sinReparto.length > 3 ? '…' : ''}.` });
+    // Meses con importe fuera de las fechas de las partidas.
+    const ini = conceptos.map(k => k.inicio).filter(Boolean).sort()[0];
+    const fin = conceptos.map(k => k.fin).filter(Boolean).sort().pop();
+    if (ini && fin) {
+      const fuera = periodos.filter((p, j) => porMes[j] > 0 && (p.desde.slice(0, 7) < ini.slice(0, 7) || p.desde.slice(0, 7) > fin.slice(0, 7)));
+      if (fuera.length) rev.push({ nivel: 'aviso', texto: `Hay importe programado en meses fuera de las fechas de las partidas (${fuera.map(p => p.desde.slice(0, 7)).join(', ')}). Revisa que los meses del encabezado sean correctos.` });
+    }
+  } else if (conceptos.some(k => k.inicio)) {
+    rev.push({ nivel: 'aviso', texto: 'No encontré columnas de meses en el encabezado: el programa de erogaciones se calculará con las fechas de cada partida.' });
+  }
+
+  // 3. Importes que parecen cantidades (o al revés).
+  const conPrecio = conceptos.filter(k => k.cantidad && k.precio);
+  const malas = conPrecio.filter(k => Math.abs(k.cantidad * k.precio - k.importe) > Math.max(1, k.importe * 0.005));
+  if (malas.length) {
+    const comoCantidad = malas.filter(k => igual(k.importe, k.cantidad)).length;
+    const grave = malas.length > conPrecio.length * 0.3;
+    rev.push({ nivel: grave ? 'error' : 'aviso', texto: comoCantidad > malas.length / 2
+      ? `En ${malas.length} partidas el importe es igual a la cantidad: la columna de importe parece ser de cantidades.`
+      : `${malas.length} partidas tienen cantidad × precio distinto al importe (se usa el importe): ${malas.slice(0, 3).map(k => k.clave).join(', ')}${malas.length > 3 ? '…' : ''}.` });
+  }
+  for (const a of avisos) rev.push({ nivel: 'aviso', texto: a });
+  return rev;
 }
 
 // ---------- Navegador ----------
@@ -259,17 +363,58 @@ function cargarXLSX() {
   });
 }
 
+// Columnas elegidas a mano: se recuerdan en este equipo por la forma del encabezado, para que
+// la próxima vez que llegue un archivo con el mismo formato se lea igual.
+const MEMORIA = 'rema-columnas';
+function memoria() { try { return JSON.parse(localStorage.getItem(MEMORIA) || '{}'); } catch { return {}; } }
+export function recordarColumnas(rows, fila, cols) {
+  try {
+    const m = memoria();
+    m[firmaEncabezado(rows[fila])] = { cols, usado: Date.now() };
+    const claves = Object.keys(m).sort((a, b) => m[b].usado - m[a].usado).slice(0, 30);
+    localStorage.setItem(MEMORIA, JSON.stringify(Object.fromEntries(claves.map(k => [k, m[k]]))));
+  } catch { /* sin almacenamiento: no se recuerda */ }
+}
+function recordadas(rows) {
+  const m = memoria();
+  for (let i = 0; i < Math.min(rows.length, 80); i++) {
+    const f = firmaEncabezado(rows[i]);
+    if (f && m[f]) return { fila: i, cols: m[f].cols };
+  }
+  return null;
+}
+
+let libro = null; // último archivo leído: { hojas: {nombre: rows} }
+export const filasDe = hoja => libro?.hojas[hoja] || [];
+
+// Lee el archivo y elige la hoja con más partidas. Si falla, el error trae las hojas y los
+// renglones candidatos a encabezado para elegirlos a mano.
 export async function leerArchivo(file) {
   await cargarXLSX();
   const wb = window.XLSX.read(await file.arrayBuffer(), { type: 'array' });
+  libro = { hojas: {} };
+  for (const nombre of wb.SheetNames) libro.hojas[nombre] = window.XLSX.utils.sheet_to_json(wb.Sheets[nombre], { header: 1, raw: true, defval: null, blankrows: true });
   let mejor = null, ultimoError = null;
   for (const nombre of wb.SheetNames) {
-    const rows = window.XLSX.utils.sheet_to_json(wb.Sheets[nombre], { header: 1, raw: true, defval: null, blankrows: true });
-    try {
-      const r = parsearHoja(rows);
-      if (!mejor || r.conceptos.length > mejor.conceptos.length) mejor = { ...r, hoja: nombre };
-    } catch (e) { ultimoError = e; }
+    const rows = libro.hojas[nombre];
+    const rec = recordadas(rows);
+    for (const op of rec ? [rec, {}] : [{}]) {
+      try {
+        const r = parsearHoja(rows, op);
+        if (!mejor || r.conceptos.length > mejor.conceptos.length) mejor = { ...r, hoja: nombre, recordado: op === rec };
+        break;
+      } catch (e) { ultimoError = e; }
+    }
   }
-  if (!mejor) throw ultimoError || new Error('No encontré partidas en el archivo.');
-  return mejor;
+  if (!mejor) {
+    const hoja = wb.SheetNames.map(n => [n, candidatosEncabezado(libro.hojas[n]).length]).sort((a, b) => b[1] - a[1])[0][0];
+    throw Object.assign(ultimoError || new Error('No encontré partidas en el archivo.'), { sinEncabezado: true, hojas: wb.SheetNames, hoja });
+  }
+  return { ...mejor, hojas: wb.SheetNames };
+}
+
+// Vuelve a leer el último archivo con el encabezado y las columnas elegidos a mano.
+export function releer(hoja, fila, cols) {
+  const r = parsearHoja(filasDe(hoja), { fila, cols });
+  return { ...r, hoja, hojas: Object.keys(libro.hojas), manual: true };
 }

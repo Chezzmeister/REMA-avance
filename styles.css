@@ -132,4 +132,9 @@ details.manual > summary { cursor: pointer; font-weight: 600; color: var(--gris)
 .fila-partida[hidden] { display: none; }
 .fila-partida label.check { align-items: flex-start; }
 .vista { margin-top: 10px; }
+[hidden] { display: none !important; }
+.revision { list-style: none; padding: 0; margin: 6px 0 10px; font-size: 14px; }
+.revision li { padding: 6px 0; border-bottom: 1px solid var(--linea); }
+.revision li b { display: inline-block; width: 18px; }
+.rev-ok b { color: var(--verde); } .rev-error { color: var(--rojo); } .rev-aviso b { color: var(--ambar); }
 .zona-peligro { border-color: var(--rojo); margin-top: 28px; }
